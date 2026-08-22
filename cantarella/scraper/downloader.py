@@ -53,8 +53,6 @@ class AniwatchDownloader:
     Fetches video streams (Sub & Dub), subtitles, and merges using ffmpeg or N_m3u8DL-RE.
     """
     DOMAINS = [
-        "https://hianime.ro",
-        "https://aniwatch.co.at",
         "https://hianime.to",
         "https://aniwatchtv.to",
         "https://aniwatch.se"

@@ -29,8 +29,6 @@ except ImportError:
 
 
 DOMAINS = [
-    "https://hianime.ro",
-    "https://aniwatch.co.at",
     "https://hianime.to",
     "https://aniwatchtv.to",
     "https://aniwatch.se"
@@ -61,7 +59,7 @@ def search_anime(query: str, limit: int = 10, proxy: Optional[str] = None) -> Li
     for base_url in DOMAINS:
         search_url = f"{base_url}{search_path}"
         try:
-            kwargs = {"headers": {**HEADERS, "Referer": f"{base_url}/"}, "timeout": 10}
+            kwargs = {"headers": {**HEADERS, "Referer": f"{base_url}/"}, "timeout": 30}
             if HAS_CURL_CFFI:
                 kwargs["impersonate"] = "chrome"
 
