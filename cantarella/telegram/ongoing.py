@@ -1,9 +1,7 @@
 #@cantarellabots
 from pyrogram.enums import ParseMode
-from cantarella.core.proxy import get_random_proxy, get_proxy_dict
 import asyncio
-from bs4 import BeautifulSoup
-from curl_cffi import requests as c_requests
+import requests
 import json
 import re
 from pyrogram import Client
@@ -15,138 +13,48 @@ from cantarella.core.anilist import TextEditor
 from config import SET_INTERVAL, TARGET_CHAT_ID, MAIN_CHANNEL, LOG_CHANNEL
 from datetime import datetime
 
-DOMAINS = ["https://hianime.to", "https://hianimes.se", "https://hianime.sx", "https://zoroxtv.to", "https://kaido.to"]
+APIS = ["https://hianime-api.vercel.app/anime", "https://aniwatch-api-v1-0.onrender.com/anime"]
 
-def fetch_with_bypass(url, headers):
-    try:
-        session = c_requests.Session(impersonate="chrome120")
-        resp = session.get(url, headers=headers, timeout=15)
-        if resp.status_code == 200 and "Just a moment" not in resp.text and "cloudflare" not in resp.text.lower():
-            return resp
-    except Exception: pass
-
-    try:
-        session = c_requests.Session(impersonate="safari15_5")
-        resp = session.get(url, headers=headers, timeout=15)
-        if resp.status_code == 200 and "Just a moment" not in resp.text and "cloudflare" not in resp.text.lower():
-            return resp
-    except Exception: pass
-
-    proxy_dict = get_proxy_dict(get_random_proxy())
-    if proxy_dict:
+def api_get(endpoint):
+    """Helper to fetch data from the public APIs."""
+    for api in APIS:
         try:
-            session = c_requests.Session(impersonate="chrome120", proxies=proxy_dict)
-            resp = session.get(url, headers=headers, timeout=15)
-            if resp.status_code == 200 and "Just a moment" not in resp.text and "cloudflare" not in resp.text.lower():
-                return resp
-        except Exception: pass
-    return None
+            r = requests.get(f"{api}{endpoint}", timeout=15)
+            if r.status_code == 200: 
+                return r.json().get("data", {})
+        except Exception: 
+            pass
+    return {}
 
 def fetch_schedule_list():
     date_str = datetime.now().strftime("%Y-%m-%d")
-    for base_url in DOMAINS:
-        headers = {
-            "Referer": f"{base_url}/",
-            "X-Requested-With": "XMLHttpRequest",
-            "Accept": "application/json, text/javascript, */*; q=0.01"
-        }
-        url = f"{base_url}/ajax/schedule/list?date={date_str}&tzOffset=-330"
-        resp = fetch_with_bypass(url, headers)
-        
-        if resp:
-            try:
-                data = resp.json()
-                html = data.get('html', '')
-                if not html.strip() or "No data to display" in html:
-                    continue
-
-                soup = BeautifulSoup(html, 'html.parser')
-                results = []
-                for item in soup.select('li'):
-                    time_elem = item.select_one('.time')
-                    title_elem = item.select_one('.film-name')
-                    link_elem = item.select_one('a.tsl-link')
-
-                    if title_elem and link_elem:
-                        href = link_elem.get('href')
-                        anime_id = href.split('/')[-1].split('?')[0]
-                        results.append({
-                            'id': anime_id,
-                            'title': title_elem.text.strip(),
-                            'time': time_elem.text.strip() if time_elem else "Unknown"
-                        })
-                if results:
-                    return results
-            except Exception:
-                continue
-    return []
-
-def extract_items_from_html(html, base_url):
-    soup = BeautifulSoup(html, 'html.parser')
-    items = soup.select('.flw-item, .film_list-wrap .item')
+    data = api_get(f"/schedule?date={date_str}")
     results = []
-    for item in items:
-        title_elem = item.select_one('.film-name a') or item.select_one('.dynamic-name')
-        if not title_elem: continue
-        title = title_elem.get('title') or title_elem.text.strip()
-        href = title_elem.get('href')
-        if not href: continue
-        
-        anime_id = href.split('/')[-1].split('?')[0]
-        full_url = f"{base_url}{href}" if href.startswith('/') else f"{base_url}/{href}"
-        
-        if not any(r['id'] == anime_id for r in results):
-            results.append({
-                'title': title,
-                'id': anime_id,
-                'url': full_url
-            })
+    for item in data.get("scheduledAnimes", []):
+        results.append({
+            'id': item.get('id'),
+            'title': item.get('name'),
+            'time': item.get('time')
+        })
     return results
 
 def fetch_recently_updated():
-    for base_url in DOMAINS:
-        headers = {"Referer": f"{base_url}/"}
-        print(f"[*] Attempting to fetch recent anime from {base_url}...")
-        
-        # Strategy 1: /recently-updated
-        resp = fetch_with_bypass(f"{base_url}/recently-updated", headers)
-        if resp:
-            results = extract_items_from_html(resp.text, base_url)
-            if results: return results
-            
-        # Strategy 2: /home
-        resp = fetch_with_bypass(f"{base_url}/home", headers)
-        if resp:
-            soup = BeautifulSoup(resp.text, 'html.parser')
-            headings = soup.find_all(['h2', 'h3'], string=re.compile(r'(Recently Updated|Latest Episode|Recently Added)', re.I))
-            if headings:
-                for heading in headings:
-                    section = heading.find_parent('section') or heading.find_parent('div', class_=re.compile(r'block_area'))
-                    if section:
-                        results = extract_items_from_html(str(section), base_url)
-                        if results: return results
-
-        # Strategy 3: /ajax/home/widget/updated-all
-        ajax_headers = headers.copy()
-        ajax_headers["X-Requested-With"] = "XMLHttpRequest"
-        resp = fetch_with_bypass(f"{base_url}/ajax/home/widget/updated-all", ajax_headers)
-        if resp:
-            try:
-                html = resp.json().get('html', '')
-                results = extract_items_from_html(html, base_url)
-                if results: return results
-            except: pass
-            
-        print(f"[-] {base_url} failed or returned empty.")
-        
-    return []
+    data = api_get("/recently-updated")
+    results = []
+    for item in data.get("animes", []):
+        results.append({
+            'title': item.get('name'),
+            'id': item.get('id'),
+            'url': item.get('id') # Using ID instead of URL
+        })
+    return results
 
 async def check_and_download_ongoing(client: Client, chat_id: int):
-    print("\n--- Starting Ongoing Check Cycle ---")
+    print("\n--- Starting Ongoing Check Cycle via API ---")
     recent_animes = await asyncio.to_thread(fetch_recently_updated)
     
     if not recent_animes:
-        print("[-] No recently updated anime found this cycle (all mirrors failed or blocked).")
+        print("[-] No recently updated anime found this cycle (API returned empty).")
         return
 
     downloader = cantarellatvDownloader()
@@ -155,11 +63,12 @@ async def check_and_download_ongoing(client: Client, chat_id: int):
 
     for idx, anime in enumerate(recent_animes):
         try:
+            # We now pass the anime ID to list_episodes
             entries = await asyncio.to_thread(downloader.list_episodes, anime['url'])
             if not entries: continue
 
             latest_ep = entries[-1]
-            ep_url = latest_ep['url']
+            ep_url = latest_ep['url'] # This is now the raw episode ID (e.g. anime-name?ep=123)
             ep_num = latest_ep.get('ep_number')
             ep_id = latest_ep.get('ep_id')
 
