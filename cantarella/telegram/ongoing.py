@@ -15,7 +15,7 @@ from cantarella.telegram.pages import post_to_main_channel
 from cantarella.core.anilist import TextEditor
 from config import SET_INTERVAL, TARGET_CHAT_ID, MAIN_CHANNEL, LOG_CHANNEL
 
-# UPDATED: Make sure it matches the new domain
+# Make sure this matches your active domain
 BASE_URL = "https://hianimes.se"
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -34,7 +34,6 @@ def fetch_schedule_list():
 
         date_str = datetime.now().strftime("%Y-%m-%d")
 
-        # UPDATED: HiAnime clones require specific AJAX headers to return JSON
         ajax_headers = HEADERS.copy()
         ajax_headers["X-Requested-With"] = "XMLHttpRequest"
         ajax_headers["Accept"] = "application/json, text/javascript, */*; q=0.01"
@@ -43,11 +42,9 @@ def fetch_schedule_list():
         resp = session.get(url, headers=ajax_headers, impersonate="chrome")
         
         if resp.status_code == 200:
-            # UPDATED: Safely attempt to parse JSON to prevent crashes
             try:
                 data = resp.json()
             except json.JSONDecodeError:
-                print("Schedule endpoint did not return valid JSON. Skipping schedule fetch.")
                 return []
 
             html = data.get('html', '')
@@ -84,29 +81,81 @@ def fetch_recently_updated():
             
         results = []
 
-        # UPDATED: Directly fetch from /recently-updated. It's much more reliable
-        # than trying to guess the layout/headings of the homepage.
-        recent_url = f"{BASE_URL}/recently-updated"
-        resp = session.get(recent_url, headers=HEADERS, impersonate="chrome")
+        # 1. Try the home page directly
+        home_url = f"{BASE_URL}/home"
+        resp = session.get(home_url, headers=HEADERS, impersonate="chrome")
         
         if resp.status_code == 200:
             soup = BeautifulSoup(resp.text, 'html.parser')
-            # Look for the anime item cards
-            items = soup.select('.flw-item')
             
+            # Check multiple possible headings for the recent episodes section
+            headings = soup.find_all(['h2', 'h3'], string=re.compile(r'(Recently Updated|Latest Episode|Recently Added)', re.I))
+            
+            items = []
+            if headings:
+                for heading in headings:
+                    section = heading.find_parent('section') or heading.find_parent('div', class_=re.compile(r'block_area'))
+                    if section:
+                        found_items = section.select('.flw-item')
+                        if found_items:
+                            items.extend(found_items)
+                            break # Found the right section
+            
+            # Fallback: if specific section wasn't found but page loaded, grab ALL .flw-item cards
+            if not items:
+                items = soup.select('.flw-item')
+
             for item in items:
                 title_elem = item.select_one('.film-name a') or item.select_one('.dynamic-name')
-                if not title_elem:
-                    continue
+                if not title_elem: continue
                 title = title_elem.get('title') or title_elem.text.strip()
                 href = title_elem.get('href')
+                if not href: continue
+                
                 anime_id = href.split('/')[-1].split('?')[0]
                 full_url = f"{BASE_URL}{href}" if href.startswith('/') else f"{BASE_URL}/{href}"
-                results.append({
-                    'title': title,
-                    'id': anime_id,
-                    'url': full_url
-                })
+                
+                # Prevent duplicates
+                if not any(r['id'] == anime_id for r in results):
+                    results.append({
+                        'title': title,
+                        'id': anime_id,
+                        'url': full_url
+                    })
+
+        # 2. If STILL empty, try the AJAX endpoint directly
+        if not results:
+            ajax_headers = HEADERS.copy()
+            ajax_headers["X-Requested-With"] = "XMLHttpRequest"
+            ajax_headers["Accept"] = "application/json, text/javascript, */*; q=0.01"
+            
+            ajax_url = f"{BASE_URL}/ajax/home/widget/updated-all"
+            resp_ajax = session.get(ajax_url, headers=ajax_headers, impersonate="chrome")
+            
+            if resp_ajax.status_code == 200:
+                try:
+                    data = resp_ajax.json()
+                    html = data.get('html', '')
+                    if html:
+                        soup = BeautifulSoup(html, 'html.parser')
+                        for item in soup.select('.flw-item'):
+                            title_elem = item.select_one('.film-name a') or item.select_one('.dynamic-name')
+                            if not title_elem: continue
+                            title = title_elem.get('title') or title_elem.text.strip()
+                            href = title_elem.get('href')
+                            if not href: continue
+                            
+                            anime_id = href.split('/')[-1].split('?')[0]
+                            full_url = f"{BASE_URL}{href}" if href.startswith('/') else f"{BASE_URL}/{href}"
+                            
+                            if not any(r['id'] == anime_id for r in results):
+                                results.append({
+                                    'title': title,
+                                    'id': anime_id,
+                                    'url': full_url
+                                })
+                except Exception as e:
+                    print(f"AJAX parsing error: {e}")
 
         return results
     except Exception as e:
