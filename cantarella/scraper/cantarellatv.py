@@ -20,9 +20,13 @@ class cantarellatvDownloader:
         self.download_path.mkdir(exist_ok=True)
         self.binary_path = self._get_binary_path()
         self.progress_queue = progress_queue or Queue()
-        self.base_url = "https://aniwatchtv.to"
+        
+        # UPDATED: Base URL switched to new working domain
+        self.base_url = "https://hianimes.se"
+        
         self.headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Referer": f"{self.base_url}/"
         }
         self.proxy = get_random_proxy()
         self.session = requests.Session()
@@ -57,7 +61,8 @@ class cantarellatvDownloader:
         return f"{s} {size_name[i]}"
 
     def get_episode_id(self, url):
-        if "aniwatchtv.to" in url:
+        # UPDATED: Check for new domains including hianimes.se and aniwaves.ru
+        if "hianime" in url or "hianimes.se" in url or "aniwaves.ru" in url:
              match = re.search(r'ep=(\d+)', url)
              if match: return match.group(1)
 
@@ -105,13 +110,9 @@ class cantarellatvDownloader:
             html = resp_servers.json().get('html', '')
 
             def find_sources_with_priority(data_type):
-                # Priority: MegaCloud (1), then VidSrc (4)
-                # Selector matches: data-type="sub" data-id="123" data-server-id="1"
-                # Regex will find all matches for the given type
                 pattern = rf'data-type="{data_type}" data-id="(\d+)"[^>]+data-server-id="(\d+)"'
                 matches = re.findall(pattern, html)
 
-                # Sort matches by priority list [1, 4]
                 priority = {"1": 1, "4": 2}
                 sorted_matches = sorted(matches, key=lambda x: priority.get(x[1], 99))
 
@@ -142,29 +143,22 @@ class cantarellatvDownloader:
             sources_data = resp_sources.json()
             embed_url = sources_data.get('link')
             if embed_url:
-                # If it's a MegaCloud link, we use our specialized extractor
                 if "megacloud" in embed_url.lower() or "rapid-cloud" in embed_url.lower() or "cloud-stream" in embed_url.lower():
                     scraper = Megacloud(embed_url)
                     data = scraper.extract()
                     if isinstance(data.get('sources'), list) and data['sources']:
                          return data
                 else:
-                    # For other servers like VidSrc, we return the raw data with the link
-                    # The downloader logic might need to be adjusted if it expects direct m3u8
-                    # rapid-cloud also often works similarly to MegaCloud.
                     return sources_data
         except Exception as e:
             print(f"Error in _get_sources: {e}")
             pass
         return None
 
-
     def get_episode_info(self, url):
-        # First try to find anime_id and ep_id from url
         anime_id = None
         ep_id = None
 
-        # Format: watch/hells-paradise-season-2-20405?ep=162597
         match = re.search(r'watch/([^?]+)\?ep=(\d+)', url)
         if match:
              anime_id = match.group(1)
@@ -178,7 +172,6 @@ class cantarellatvDownloader:
 
         numeric_id = anime_id.split('-')[-1]
 
-        # ── Try to get the REAL anime title from the page HTML ──
         anime_name = None
         try:
             page_url = f"{self.base_url}/watch/{anime_id}" if "?" not in anime_id else f"{self.base_url}/watch/{anime_id.split('?')[0]}"
@@ -186,12 +179,10 @@ class cantarellatvDownloader:
             if resp_page.status_code == 200:
                 from bs4 import BeautifulSoup
                 soup = BeautifulSoup(resp_page.text, 'html.parser')
-                # Primary: the main heading or title on the anime page
                 title_elem = soup.select_one('h2.film-name, h2.dynamic-name, .anis-watch-detail .film-name')
                 if title_elem:
                     anime_name = title_elem.get_text(strip=True)
                 else:
-                    # Fallback: og:title meta tag
                     og_title = soup.select_one('meta[property="og:title"]')
                     if og_title and og_title.get('content'):
                         anime_name = og_title['content'].split(' - ')[0].strip()
@@ -205,7 +196,6 @@ class cantarellatvDownloader:
             if resp_eps.status_code == 200:
                 html = resp_eps.json().get('html', '')
 
-                # Find the specific episode in the list
                 anchor = None
                 if ep_id:
                     ep_match = re.search(rf'<a[^>]+data-id="{ep_id}"[^>]+>', html)
@@ -224,10 +214,8 @@ class cantarellatvDownloader:
                     ep_num = num_match.group(1) if num_match else "0"
                     ep_title = title_match.group(1).replace('&#39;', "'") if title_match else "Unknown"
 
-                    # Use the page-fetched title if available, otherwise fall back to URL slug
                     if not anime_name:
                         anime_full_name = anime_id.replace('-', ' ').title()
-                        # Remove numeric ID from end
                         anime_full_name = re.sub(r' \d+$', '', anime_full_name)
                         anime_name = anime_full_name
 
@@ -248,7 +236,6 @@ class cantarellatvDownloader:
 
     def download_episode(self, url, quality="auto", name_override=None, season_override=None, ep_num_override=None):
         if quality == "all":
-            # If all qualities are requested, download each one sequentially
             success = True
             for q in ["360", "720", "1080"]:
                 if not self._download_single_episode(url, quality=q, name_override=name_override, season_override=season_override, ep_num_override=ep_num_override):
@@ -270,12 +257,10 @@ class cantarellatvDownloader:
 
         anime_name, ep_num, ep_title, season = self.get_episode_info(url)
 
-        # Apply overrides
         final_name = name_override if name_override else anime_name
         final_season = season_override if season_override else season
         final_ep_num = ep_num_override if ep_num_override else ep_num
 
-        # Audio status
         audio = "JP"
         if all_data.get('sub') and all_data.get('dub'):
              audio = "Dual Audio"
@@ -284,11 +269,9 @@ class cantarellatvDownloader:
 
         qual_str = quality if quality in ["360", "720", "1080"] else "auto"
 
-        # Sanitize filename to prevent WinError 123
         def sanitize(name):
             return re.sub(r'[\\/*?:"<>|]', "", name)
 
-        # Fetch the FORMAT from config and inject parameters
         try:
             from config import FORMAT
         except ImportError:
@@ -302,19 +285,15 @@ class cantarellatvDownloader:
             audio=audio
         )
 
-        # Sanitize filename to prevent WinError 123
         base_filename = sanitize(base_filename_str)
 
-        # Isolation: Use a task-specific subdirectory to prevent file collisions
         task_dir = self.download_path / f"{ep_id}_{qual_str}"
         task_dir.mkdir(exist_ok=True)
 
-        # Paths
         video_temp = task_dir / f"{base_filename}_sub.mkv"
         audio_temp = task_dir / f"{base_filename}_dub.mkv"
         final_file = self.download_path / f"{base_filename}.mkv"
 
-        # Download SUB (Japanese audio with subs)
         data = all_data.get('sub') or all_data.get('dub')
         m3u8_url = data['sources'][0]['file']
 
@@ -337,7 +316,6 @@ class cantarellatvDownloader:
             if self.proxy:
                 cmd.extend(["--custom-proxy", self.proxy])
 
-            # Select specific video quality, fallback to auto-select if not found
             if quality == "1080":
                 cmd.extend(["-sv", "res='1080':for=best"])
             elif quality == "720":
@@ -350,12 +328,10 @@ class cantarellatvDownloader:
             try:
                 print(f"[{dl_type.upper()}] Running: {' '.join(cmd[:3])}... (binary: {cmd[0]})", flush=True)
 
-                # Verify binary exists and is executable
                 if not _os.path.isfile(cmd[0]):
                     print(f"Binary not found at: {cmd[0]}", flush=True)
                     return False
 
-                # Use binary mode and bufsize=0 to get real-time unbuffered output
                 process = subprocess.Popen(
                     cmd,
                     stdout=subprocess.PIPE,
@@ -363,10 +339,7 @@ class cantarellatvDownloader:
                     bufsize=0
                 )
 
-                # Collect last few lines for error reporting
                 last_lines = []
-
-                # Read output char by char to handle carriage returns (\r)
                 buffer = b""
                 while True:
                     char = process.stdout.read(1)
@@ -379,26 +352,19 @@ class cantarellatvDownloader:
                             line = ""
 
                         if line:
-                            # Strip ANSI escape codes
                             line = re.sub(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])', '', line)
 
-                            # Keep last 5 lines for error diagnosis
                             last_lines.append(line)
                             if len(last_lines) > 5:
                                 last_lines.pop(0)
 
-                            # Print to console logs for debugging
                             if "%" in line:
                                 print(f"[{dl_type.upper()}] {line}", flush=True)
                             else:
-                                # Print non-progress lines too (errors, info)
                                 print(f"[{dl_type.upper()}] {line}", flush=True)
 
                             if "%" in line:
                                 percent_match = re.search(r"(\d+(\.\d+)?)%", line)
-
-                                # Search for speed specifically after the percentage indicator,
-                                # as the actual download speed usually appears after progress
                                 parts = re.split(r"\d+(\.\d+)?%", line)
                                 speed_match = None
                                 if len(parts) > 1:
@@ -407,7 +373,6 @@ class cantarellatvDownloader:
                                     if not speed_match:
                                         speed_match = re.search(r"(\d+(\.\d+)?\s*\S+/(s|sec))", after_percent, re.I)
 
-                                # Fallback to general search if the specific one fails
                                 if not speed_match:
                                     speed_match = re.search(r"(\d+(\.\d+)?\s*[MKG]?i?(B/s|bps|b/s|bit/s))", line, re.I)
                                     if not speed_match:
@@ -416,7 +381,6 @@ class cantarellatvDownloader:
                                 size_match = re.search(r"(\d+(\.\d+)?\s*\S+)\s*/\s*(\d+(\.\d+)?\s*\S+)", line, re.I)
 
                                 if percent_match:
-                                    # Extract values with fallbacks
                                     pct_val = percent_match.group(1)
                                     speed_val = speed_match.group(1) if speed_match else "0 MB/s"
 
@@ -439,17 +403,10 @@ class cantarellatvDownloader:
                     error_detail = '\n'.join(last_lines) if last_lines else 'No output captured'
                     print(f"[{dl_type.upper()}] N_m3u8DL-RE exited with code {exit_code}:\n{error_detail}", flush=True)
                 return exit_code == 0
-            except FileNotFoundError:
-                print(f"N_m3u8DL-RE binary not found or not executable: {cmd[0]}", flush=True)
-                return False
-            except PermissionError:
-                print(f"N_m3u8DL-RE binary not executable (permission denied): {cmd[0]}", flush=True)
-                return False
             except Exception as e:
                 print(f"Error running N_m3u8DL-RE: {e}", flush=True)
                 return False
 
-        # Dub settings
         dub_downloaded = [False]
         dub_thread = None
         if all_data.get('sub') and all_data.get('dub'):
@@ -458,8 +415,6 @@ class cantarellatvDownloader:
              def download_dub():
                  save_name = f"{base_filename}_dub"
                  if run_n_m3u8dl(dub_url, save_name, dl_type='dub', quality=quality):
-                     # Usually saves as .mp4 or .m4a or .mkv, let's find it and rename it to audio_temp (.mkv)
-                     # Actually N_m3u8DL-RE outputs to {save_name}.mp4 by default if it's video+audio, or .m4a if audio only.
                      for ext in ['.mp4', '.m4a', '.mkv', '.ts']:
                          p = task_dir / f"{save_name}{ext}"
                          if p.exists():
@@ -472,7 +427,6 @@ class cantarellatvDownloader:
              dub_thread = Thread(target=download_dub)
              dub_thread.start()
 
-        # Start Sub download in main thread
         save_name_sub = f"{base_filename}_sub"
         if run_n_m3u8dl(m3u8_url, save_name_sub, dl_type='sub', quality=quality):
             for ext in ['.mp4', '.mkv', '.ts']:
@@ -490,7 +444,6 @@ class cantarellatvDownloader:
 
         dub_downloaded = dub_downloaded[0]
 
-        # 2. Download subtitles manually
         sub_files = []
         if data.get('tracks'):
             subs = [t for t in data['tracks'] if t.get('kind') == 'captions']
@@ -505,25 +458,19 @@ class cantarellatvDownloader:
                         sub_files.append((sub_path, lang))
                 except: pass
 
-        # 3. Merge with ffmpeg
         ffmpeg_exe = 'ffmpeg'
 
-        # Ensure video_temp exists, if not, find the file with any extension
         if not video_temp.exists():
              for f in task_dir.iterdir():
                   if f.name.startswith(f"{base_filename}_sub."):
                        f.replace(video_temp)
                        break
 
-        # Check if we have anything to merge
         if not shutil.which(ffmpeg_exe) or (not sub_files and not dub_downloaded):
             if video_temp.exists():
                  video_temp.replace(final_file)
-
-            # Cleanup task dir
             try: shutil.rmtree(task_dir)
             except: pass
-
             self.progress_queue.put({'finished': True, 'filename': str(final_file), 'title': base_filename})
             return True
 
@@ -531,11 +478,9 @@ class cantarellatvDownloader:
 
         cmd = [ffmpeg_exe, '-y']
 
-        # Add inputs only if they exist
         if video_temp.exists():
              cmd.extend(['-i', str(video_temp)])
         else:
-             # If no video exists, we cannot merge anything
              self.progress_queue.put({'error': 'Video file disappeared before merge.'})
              return False
 
@@ -552,23 +497,20 @@ class cantarellatvDownloader:
 
         sub_files = valid_subs
 
-        # Mapping tracks
-        cmd.extend(['-map', '0:v']) # First input video
-        cmd.extend(['-map', '0:a']) # First input audio (Japanese)
+        cmd.extend(['-map', '0:v']) 
+        cmd.extend(['-map', '0:a']) 
         if dub_downloaded:
-             cmd.extend(['-map', '1:a:0']) # Second input's first audio track (English)
+             cmd.extend(['-map', '1:a:0']) 
 
         sub_offset = 2 if dub_downloaded else 1
         for i in range(len(sub_files)):
             cmd.extend(['-map', f'{i + sub_offset}:s'])
 
-        # Metadata & Codecs
         cmd.extend(['-c', 'copy', '-c:s', 'srt'])
         cmd.extend(['-metadata:s:a:0', 'language=jpn', '-metadata:s:a:0', 'title=Japanese'])
         if dub_downloaded:
              cmd.extend(['-metadata:s:a:1', 'language=eng', '-metadata:s:a:1', 'title=English'])
 
-        # Set the first subtitle track (usually English) as default to auto-select
         if sub_files:
              cmd.extend(['-disposition:s:0', 'default'])
 
@@ -576,24 +518,19 @@ class cantarellatvDownloader:
 
         try:
             subprocess.run(cmd, check=True, capture_output=True)
-            # Cleanup task dir
             try: shutil.rmtree(task_dir)
             except: pass
 
             self.progress_queue.put({'finished': True, 'filename': str(final_file), 'title': base_filename})
             return True
         except Exception as e:
-            # Fallback to original video if merge fails
             if video_temp.exists():
                  video_temp.replace(final_file)
             elif not final_file.exists():
-                 # Look for any sub file that might have been renamed or left over in task_dir
                  for f in task_dir.iterdir():
                       if f.name.startswith(f"{base_filename}_sub."):
                            f.replace(final_file)
                            break
-
-            # Cleanup task dir
             try: shutil.rmtree(task_dir)
             except: pass
 
@@ -602,7 +539,9 @@ class cantarellatvDownloader:
 
     def list_episodes(self, anime_url):
         anime_slug = None
-        if "aniwatchtv.to" in anime_url:
+        
+        # UPDATED: Added new domains to the condition here
+        if "hianime" in anime_url or "hianimes.se" in anime_url or "aniwaves.ru" in anime_url:
              anime_slug = anime_url.split('/')[-1].split('?')[0]
              anime_id = anime_slug.split('-')[-1]
         else:
@@ -623,7 +562,6 @@ class cantarellatvDownloader:
             resp_eps = self.session.get(ep_list_url, headers={"X-Requested-With": "XMLHttpRequest", **self.headers}, impersonate="chrome")
             if resp_eps.status_code == 200:
                 html = resp_eps.json().get('html', '')
-                # Using a more flexible regex to find title, data-number, and data-id regardless of order
                 results = []
                 for match in re.finditer(r'<a\s+[^>]*class="[^"]*ep-item[^"]*"[^>]*>', html):
                     tag = match.group(0)
