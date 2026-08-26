@@ -15,7 +15,7 @@ from cantarella.telegram.pages import post_to_main_channel
 from cantarella.core.anilist import TextEditor
 from config import SET_INTERVAL, TARGET_CHAT_ID, MAIN_CHANNEL, LOG_CHANNEL
 
-# UPDATED: Changed from aniwatchtv.to to the new domain
+# UPDATED: Make sure it matches the new domain
 BASE_URL = "https://hianimes.se"
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -32,14 +32,25 @@ def fetch_schedule_list():
         if proxy_dict:
             session.proxies.update(proxy_dict)
 
-        # Current date in YYYY-MM-DD format
         date_str = datetime.now().strftime("%Y-%m-%d")
 
-        # AJAX for schedule list, tzOffset = -330 for IST (Indian Standard Time)
+        # UPDATED: HiAnime clones require specific AJAX headers to return JSON
+        ajax_headers = HEADERS.copy()
+        ajax_headers["X-Requested-With"] = "XMLHttpRequest"
+        ajax_headers["Accept"] = "application/json, text/javascript, */*; q=0.01"
+
         url = f"{BASE_URL}/ajax/schedule/list?date={date_str}&tzOffset=-330"
-        resp = session.get(url, headers=HEADERS, impersonate="chrome")
+        resp = session.get(url, headers=ajax_headers, impersonate="chrome")
+        
         if resp.status_code == 200:
-            html = resp.json().get('html', '')
+            # UPDATED: Safely attempt to parse JSON to prevent crashes
+            try:
+                data = resp.json()
+            except json.JSONDecodeError:
+                print("Schedule endpoint did not return valid JSON. Skipping schedule fetch.")
+                return []
+
+            html = data.get('html', '')
             if not html.strip() or "No data to display" in html:
                 return []
 
@@ -70,52 +81,32 @@ def fetch_recently_updated():
         proxy_dict = get_proxy_dict(get_random_proxy())
         if proxy_dict:
             session.proxies.update(proxy_dict)
+            
         results = []
 
-        # Try fetching from home page first
-        home_url = f"{BASE_URL}/home"
-        resp = session.get(home_url, headers=HEADERS, impersonate="chrome")
+        # UPDATED: Directly fetch from /recently-updated. It's much more reliable
+        # than trying to guess the layout/headings of the homepage.
+        recent_url = f"{BASE_URL}/recently-updated"
+        resp = session.get(recent_url, headers=HEADERS, impersonate="chrome")
+        
         if resp.status_code == 200:
             soup = BeautifulSoup(resp.text, 'html.parser')
-            # Look for the Latest Episodes section (might be named slightly differently)
-            latest_ep_heading = soup.find('h2', string=re.compile(r'Latest Episode', re.I))
-            if latest_ep_heading:
-                section = latest_ep_heading.find_parent('section')
-                if section:
-                    for item in section.select('.flw-item'):
-                        title_elem = item.select_one('.film-name a')
-                        if not title_elem:
-                            continue
-                        title = title_elem.get('title') or title_elem.text.strip()
-                        href = title_elem.get('href')
-                        anime_id = href.split('/')[-1].split('?')[0]
-                        full_url = f"{BASE_URL}{href}" if href.startswith('/') else f"{BASE_URL}/{href}"
-                        results.append({
-                            'title': title,
-                            'id': anime_id,
-                            'url': full_url
-                        })
-
-        # Fallback to recently-updated if home page parsing failed or returned empty
-        if not results:
-            print("Could not find Latest Episodes on home page, falling back to /recently-updated")
-            fallback_url = f"{BASE_URL}/recently-updated"
-            resp = session.get(fallback_url, headers=HEADERS, impersonate="chrome")
-            if resp.status_code == 200:
-                soup = BeautifulSoup(resp.text, 'html.parser')
-                for item in soup.select('.film_list-wrap .flw-item'):
-                    title_elem = item.select_one('.film-name a')
-                    if not title_elem:
-                        continue
-                    title = title_elem.get('title') or title_elem.text.strip()
-                    href = title_elem.get('href')
-                    anime_id = href.split('/')[-1].split('?')[0]
-                    full_url = f"{BASE_URL}{href}" if href.startswith('/') else f"{BASE_URL}/{href}"
-                    results.append({
-                        'title': title,
-                        'id': anime_id,
-                        'url': full_url
-                    })
+            # Look for the anime item cards
+            items = soup.select('.flw-item')
+            
+            for item in items:
+                title_elem = item.select_one('.film-name a') or item.select_one('.dynamic-name')
+                if not title_elem:
+                    continue
+                title = title_elem.get('title') or title_elem.text.strip()
+                href = title_elem.get('href')
+                anime_id = href.split('/')[-1].split('?')[0]
+                full_url = f"{BASE_URL}{href}" if href.startswith('/') else f"{BASE_URL}/{href}"
+                results.append({
+                    'title': title,
+                    'id': anime_id,
+                    'url': full_url
+                })
 
         return results
     except Exception as e:
@@ -125,6 +116,10 @@ def fetch_recently_updated():
 async def check_and_download_ongoing(client: Client, chat_id: int):
     print("Checking for recently updated anime...")
     recent_animes = await asyncio.to_thread(fetch_recently_updated)
+    
+    if not recent_animes:
+        print("No recently updated anime found this cycle.")
+        return
 
     downloader = cantarellatvDownloader()
 
@@ -297,6 +292,6 @@ async def ongoing_task(client: Client):
             except Exception as e:
                 print(f"Error in ongoing task loop: {e}")
         else:
-            pass 
+            pass  # Paused via /settings, loop stays alive
 
         await asyncio.sleep(SET_INTERVAL)
