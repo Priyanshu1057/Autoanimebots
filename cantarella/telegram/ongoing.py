@@ -1,3 +1,4 @@
+#@cantarellabots
 from pyrogram.enums import ParseMode
 from cantarella.core.proxy import get_random_proxy, get_proxy_dict
 import asyncio
@@ -14,9 +15,11 @@ from cantarella.telegram.pages import post_to_main_channel
 from cantarella.core.anilist import TextEditor
 from config import SET_INTERVAL, TARGET_CHAT_ID, MAIN_CHANNEL, LOG_CHANNEL
 
-BASE_URL = "https://aniwatchtv.to"
+# UPDATED: Changed from aniwatchtv.to to the new domain
+BASE_URL = "https://hianimes.se"
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Referer": f"{BASE_URL}/"
 }
 
 from datetime import datetime
@@ -43,7 +46,6 @@ def fetch_schedule_list():
             soup = BeautifulSoup(html, 'html.parser')
 
             results = []
-            # Updated selector for the provided HTML structure
             for item in soup.select('li'):
                 time_elem = item.select_one('.time')
                 title_elem = item.select_one('.film-name')
@@ -75,7 +77,8 @@ def fetch_recently_updated():
         resp = session.get(home_url, headers=HEADERS, impersonate="chrome")
         if resp.status_code == 200:
             soup = BeautifulSoup(resp.text, 'html.parser')
-            latest_ep_heading = soup.find('h2', string='Latest Episode')
+            # Look for the Latest Episodes section (might be named slightly differently)
+            latest_ep_heading = soup.find('h2', string=re.compile(r'Latest Episode', re.I))
             if latest_ep_heading:
                 section = latest_ep_heading.find_parent('section')
                 if section:
@@ -188,10 +191,8 @@ async def check_and_download_ongoing(client: Client, chat_id: int):
             ani_ep_num = "0"
 
             # 1. Try extracting numeric season from HiAnime title first (most reliable for "Season X" or trailing numbers)
-            # Catch "Season 5" or "Anime 5" (common for Chinese/Donghua on HiAnime)
             match_s = re.search(r'Season (\d+)', anime['title'], re.I)
             if not match_s:
-                 # Check for trailing number in the title (e.g. "Yong Sheng 5")
                  match_s = re.search(r'\s+(\d+)$', anime['title'])
 
             if match_s:
@@ -209,15 +210,12 @@ async def check_and_download_ongoing(client: Client, chat_id: int):
 
             # 4. Extract Episode number
             if data.get('nextAiringEpisode'):
-                # This works if the episode just aired and is the next expected one
                 ani_ep_num = str(data['nextAiringEpisode']['episode'] - 1)
             else:
-                # Fallback to parsing the episode list entry title
                 match_ep = re.search(r'Episode (\d+)', latest_ep.get('title', ''))
                 if match_ep:
                     ani_ep_num = match_ep.group(1)
                 else:
-                    # Try guessit on the entry title
                     from guessit import guessit
                     g = guessit(latest_ep.get('title', ''))
                     if g.get('episode'):
@@ -230,15 +228,10 @@ async def check_and_download_ongoing(client: Client, chat_id: int):
                 if "Science Future" in anime['title'] or "Season 4" in anime['title']:
                     ani_season = "4"
 
-            # Compute the ultimate universal identifier to avoid duplicate downloads
-            # even if the site lists it twice (e.g., dub added later)
             universal_ep_identifier = f"{anime_name}_S{ani_season}_E{ani_ep_num}"
-
-            # Second layer check: if this universal episode was downloaded through another ID, skip.
             is_universal_processed = await db.is_processed(universal_ep_identifier)
 
             if is_universal_processed:
-                # Mark this site-specific ID as processed too, so we don't query AniList for it again
                 await db.mark_processed(ep_identifier)
                 continue
 
@@ -256,15 +249,10 @@ async def check_and_download_ongoing(client: Client, chat_id: int):
                 await db.mark_processed(universal_ep_identifier)
                 continue
 
-            # Send a starting message to edit (in LOG_CHANNEL if set)
-
             log_id = int(LOG_CHANNEL) if LOG_CHANNEL else chat_id
             anime_name_sc = anime_name
             status_msg = await client.send_message(log_id, f"<blockquote>🔄 ᴀᴜᴛᴏ-ᴅᴏᴡɴʟᴏᴀᴅɪɴɢ ɴᴇᴡ ᴇᴘɪꜱᴏᴅᴇ: {anime_name_sc} - ꜱ{ani_season}ᴇ{ani_ep_num}...</blockquote>", parse_mode=ParseMode.HTML)
 
-            # Use the existing download logic (downloading to TARGET_CHAT_ID)
-            # quality="all" will download 360p, 720p, 1080p sequentially
-            # Pass message=None so _handle_download doesn't try to send user-side progress
             uploaded_msgs = await _handle_download(
                 client, None, ep_url, status_msg,
                 is_playlist=False, quality="all", chat_id=chat_id,
@@ -274,7 +262,6 @@ async def check_and_download_ongoing(client: Client, chat_id: int):
             )
 
             if uploaded_msgs:
-                # Create a quality map for the main channel
                 quality_map = {}
                 for msg in uploaded_msgs:
                     match = re.search(r'\[(\d+p)\]', msg.caption or "")
@@ -283,7 +270,6 @@ async def check_and_download_ongoing(client: Client, chat_id: int):
 
                 await post_to_main_channel(client, ep_url, uploaded_msgs, quality_map, None, str(ani_season), str(ani_ep_num) if ani_ep_num else "1")
 
-            # Mark as processed
             await db.mark_processed(ep_identifier)
             await db.mark_processed(universal_ep_identifier)
 
@@ -311,6 +297,6 @@ async def ongoing_task(client: Client):
             except Exception as e:
                 print(f"Error in ongoing task loop: {e}")
         else:
-            pass  # Paused via /settings, loop stays alive
+            pass 
 
         await asyncio.sleep(SET_INTERVAL)
