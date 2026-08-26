@@ -20,7 +20,7 @@ BOT_USERNAME = os.environ.get("BOT_USERNAME", "@Autoanime_flixbot")
 FSUB_PIC = os.environ.get("FSUB_PIC", "https://files.catbox.moe/bli70r.jpg")
 FSUB_LINK_EXPIRY = int(os.environ.get("FSUB_LINK_EXPIRY", 600))
 START_PIC =os.environ.get("START_PIC", "https://files.catbox.moe/4b8jvw.jpg")
-
+PROXY = "http://wbjpkohe:8m4vxoauzbg2@31.59.20.176:6754/"
 # ─── Filename & Caption Formats ───
 FORMAT = os.environ.get("FORMAT", "[S{season}-E{episode}] {title} [{quality}] [{audio}]")
 CAPTION = os.environ.get("CAPTION", "[ @cantarellabots {FORMAT}]")
