@@ -3,54 +3,40 @@ from curl_cffi import requests
 from bs4 import BeautifulSoup
 from cantarella.core.proxy import get_random_proxy, get_proxy_dict
 
-# Added more reliable mirrors
-DOMAINS = ["https://hianimes.se", "https://hianime.to", "https://aniwaves.ru", "https://zoroxtv.to"]
+# A mix of the official domain, proxies, and clones
+DOMAINS = ["https://hianime.to", "https://hianimes.se", "https://hianime.sx", "https://zoroxtv.to", "https://kaido.to"]
 
-def get_browser_headers(base_url):
-    """Generates perfect Chrome browser headers to trick Cloudflare."""
-    return {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Referer": f"{base_url}/",
-        "Sec-Ch-Ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
-        "Sec-Ch-Ua-Mobile": "?0",
-        "Sec-Ch-Ua-Platform": '"Windows"',
-        "Sec-Fetch-Dest": "document",
-        "Sec-Fetch-Mode": "navigate",
-        "Sec-Fetch-Site": "same-origin",
-        "Sec-Fetch-User": "?1",
-        "Upgrade-Insecure-Requests": "1"
-    }
-
-def fetch_with_bypass(url, headers):
-    # 1. Try Direct Connection First with Chrome 120 impersonation
+def fetch_with_bypass(url, referer):
+    # Let curl_cffi handle ALL browser headers natively to maintain perfect CF fingerprint
+    headers = {"Referer": referer}
+    
+    # Strategy 1: Direct Chrome 120
     try:
         session = requests.Session(impersonate="chrome120")
-        resp = session.get(url, headers=headers, timeout=20)
-        
-        if resp.status_code == 200:
-            if "Just a moment" not in resp.text and "cloudflare" not in resp.text.lower():
-                return resp
-            else:
-                print(f"[-] Cloudflare blocked direct access to {url}")
-        else:
-            print(f"[-] HTTP {resp.status_code} received from {url}")
-    except Exception as e:
-        print(f"[-] Direct connection error on {url}: {e}")
+        resp = session.get(url, headers=headers, timeout=15)
+        if resp.status_code == 200 and "Just a moment" not in resp.text and "cloudflare" not in resp.text.lower():
+            return resp
+    except Exception: pass
 
-    # 2. Fallback to Proxy ONLY if direct connection fails
+    # Strategy 2: Direct Safari 15.5 (Often bypasses CF if Chrome is flagged)
+    try:
+        session = requests.Session(impersonate="safari15_5")
+        resp = session.get(url, headers=headers, timeout=15)
+        if resp.status_code == 200 and "Just a moment" not in resp.text and "cloudflare" not in resp.text.lower():
+            return resp
+    except Exception: pass
+
+    # Strategy 3: Proxy Fallback
     proxy = get_random_proxy()
     proxy_dict = get_proxy_dict(proxy)
     if proxy_dict:
         try:
             print(f"[*] Retrying {url} with proxy...")
             session = requests.Session(impersonate="chrome120", proxies=proxy_dict)
-            resp = session.get(url, headers=headers, timeout=20)
+            resp = session.get(url, headers=headers, timeout=15)
             if resp.status_code == 200 and "Just a moment" not in resp.text and "cloudflare" not in resp.text.lower():
                 return resp
-        except Exception as e:
-            print(f"[-] Proxy connection failed: {e}")
+        except Exception: pass
             
     return None
 
@@ -58,18 +44,17 @@ def search_anime(query: str):
     results = []
     for base_url in DOMAINS:
         url = f"{base_url}/search?keyword={query.replace(' ', '+')}"
-        headers = get_browser_headers(base_url)
-        
         print(f"[*] Attempting search on {base_url}...")
-        resp = fetch_with_bypass(url, headers)
+        
+        resp = fetch_with_bypass(url, f"{base_url}/")
         if resp:
             soup = BeautifulSoup(resp.text, 'html.parser')
-            items = soup.select('.flw-item')
-            if not items:
-                items = soup.select('.film_list-wrap > div')
-
+            
+            # Broad selectors to catch different Zoro clone templates
+            items = soup.select('.flw-item, .film_list-wrap .item, .film-detail')
+            
             for item in items:
-                title_elem = item.select_one('.film-name a') or item.select_one('a.dynamic-name') or item.select_one('a')
+                title_elem = item.select_one('.film-name a') or item.select_one('a.dynamic-name') or item.select_one('h3 a') or item.select_one('a')
                 if not title_elem: continue
                 
                 title = title_elem.get('title') or title_elem.text.strip()
@@ -100,5 +85,7 @@ def search_anime(query: str):
             if results:
                 print(f"[+] Successfully found {len(results)} results on {base_url}")
                 return results
+            else:
+                print(f"[-] Loaded {base_url} but found no items (HTML structure might be different).")
             
     return results
