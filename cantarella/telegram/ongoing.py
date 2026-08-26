@@ -1,7 +1,7 @@
 #@cantarellabots
 from pyrogram.enums import ParseMode
 import asyncio
-import requests
+from curl_cffi import requests
 import json
 import re
 from pyrogram import Client
@@ -19,7 +19,7 @@ def api_get(endpoint):
     """Helper to fetch data from the public APIs."""
     for api in APIS:
         try:
-            r = requests.get(f"{api}{endpoint}", timeout=15)
+            r = requests.get(f"{api}{endpoint}", impersonate="chrome120", timeout=15)
             if r.status_code == 200: 
                 return r.json().get("data", {})
         except Exception: 
