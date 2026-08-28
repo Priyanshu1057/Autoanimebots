@@ -17,6 +17,7 @@ class Megacloud:
     headers = {
         "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "origin": base_url,
+        "referer": base_url + "/",
     }
 
     def __init__(self, embed_url: str) -> None:
@@ -66,7 +67,7 @@ class Megacloud:
         if not sid_match: return {"sources": [], "tracks": []}
         sid = sid_match.group(1)
 
-        # Derive base_url from embed_url dynamically
+        # Derive base_url from embed_url
         base_url_match = re.search(r'(https?://[^/]+)', self.embed_url)
         base_url = base_url_match.group(1) if base_url_match else self.base_url
 
@@ -77,11 +78,11 @@ class Megacloud:
                 session.proxies.update(proxy_dict)
 
             headers = self.headers.copy()
-            
-            # UPDATED: Change hardcoded referer to the new working host
-            headers["referer"] = "https://hianimes.se/"
+            headers["referer"] = "https://aniwatchtv.to/"
 
-            curr_embed_url = self.embed_url
+            # Prefer megacloud.tv over megacloud.blog
+            curr_embed_url = self.embed_url.replace(".blog", ".tv")
+            base_url = "https://megacloud.tv"
 
             resp_html = session.get(curr_embed_url, headers=headers, impersonate="chrome").text
             client_key = self._extract_client_key(resp_html)
