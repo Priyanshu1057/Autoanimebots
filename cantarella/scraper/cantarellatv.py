@@ -42,9 +42,9 @@ class cantarellatvDownloader:
 
     def _get_binary_path(self):
         candidates = [
-            Path("binary") / "N_m3u8DL-RE",
-            Path("binary") / "N_m3u8DL-RE.exe",
-            Path("/usr/local/bin/N_m3u8DL-RE"),
+            Path("binary") / "N_m3u8DL-RE",           # Linux (local binary folder)
+            Path("binary") / "N_m3u8DL-RE.exe",       # Windows local
+            Path("/usr/local/bin/N_m3u8DL-RE"),        # Docker / Heroku container
         ]
         for p in candidates:
             if p.exists():
@@ -66,6 +66,7 @@ class cantarellatvDownloader:
         return f"{s} {size_name[i]}"
 
     def _parse_url_slug(self, url):
+        """Extracts slug, numeric anime id, and episode number from any Aniwave/Aniwatch URL."""
         slug = None
         match = re.search(r'watch/([^/?#]+)', url)
         if match:
@@ -77,6 +78,7 @@ class cantarellatvDownloader:
 
         numeric_id = slug.split('-')[-1] if slug else None
 
+        # Episode number extraction
         ep_num = "1"
         ep_match = re.search(r'/ep-([0-9.]+)', url) or re.search(r'[?&]ep=([0-9.]+)', url) or re.search(r'episode-([0-9.]+)', url)
         if ep_match:
@@ -85,10 +87,12 @@ class cantarellatvDownloader:
         return slug, numeric_id, ep_num
 
     def get_episode_id(self, url):
+        """Returns formatted episode identifier 'anime_id&eps=ep_num' for Aniwave."""
         slug, anime_id, ep_num = self._parse_url_slug(url)
         if anime_id:
             return f"{anime_id}&eps={ep_num}"
 
+        # If passed plain search keyword or title instead of URL
         anime_name_match = re.search(r'/([^/]+)-episode-(\d+)', url) or re.search(r'watch/([^/]+)-(\d+)', url)
         if anime_name_match:
             anime_name = anime_name_match.group(1).replace('-', ' ')
@@ -101,6 +105,7 @@ class cantarellatvDownloader:
         return None
 
     def search_cantarella(self, anime_name, ep_num="1"):
+        """Searches Aniwave using the working AJAX search endpoint and returns episode ID."""
         search_url = f"{self.ajax_url}/anime/search?keyword={urllib.parse.quote_plus(anime_name)}"
         try:
             resp = self.session.get(search_url, headers=self.ajax_headers, impersonate="chrome")
@@ -131,6 +136,7 @@ class cantarellatvDownloader:
                         ep_data = resp_eps.json()
                         ep_html = ep_data.get("result", "") if isinstance(ep_data, dict) else resp_eps.text
 
+                        # Match episode number in data-num
                         ep_match = re.search(rf'data-num=["\']{ep_num}["\'][^>]*data-ids=["\']([^"\']+)["\']', ep_html)
                         if not ep_match:
                             ep_match = re.search(rf'data-ids=["\']([^"\']+)["\'][^>]*data-num=["\']{ep_num}["\']', ep_html)
@@ -143,6 +149,10 @@ class cantarellatvDownloader:
         return None
 
     def get_episode_data(self, ep_id, slug=None):
+        """
+        Fetches server sources for the given episode id ('anime_id&eps=ep_num' or numeric).
+        Returns {'sub': sources_dict, 'dub': sources_dict}.
+        """
         ep_id_str = str(ep_id).replace("&amp;", "&")
         if "&eps=" in ep_id_str:
             anime_id, ep_num = ep_id_str.split("&eps=")
@@ -196,6 +206,7 @@ class cantarellatvDownloader:
         return None
 
     def _get_sources(self, server_data_id, anime_id=None, ep_num=None, slug=None):
+        """Resolves embed and video stream from /ajax/sources?id={link_id}."""
         try:
             enc_id = urllib.parse.quote(server_data_id)
             sources_url = f"{self.ajax_url}/sources?id={enc_id}&asi=0&autoPlay=0"
@@ -241,6 +252,7 @@ class cantarellatvDownloader:
         return None
 
     def get_episode_info(self, url):
+        """Fetches real anime title, episode number, episode title, and season."""
         slug, anime_id, ep_num = self._parse_url_slug(url)
         if not anime_id:
             return "Anime", "0", "Unknown", "1"
@@ -300,6 +312,7 @@ class cantarellatvDownloader:
         return slug.replace('-', ' ').title(), str(ep_num), f"Episode {ep_num}", "1"
 
     def list_episodes(self, anime_url):
+        """Lists all episodes for the specified anime URL or search term."""
         slug, anime_id, _ = self._parse_url_slug(anime_url)
         if not anime_id:
             search_url = f"{self.ajax_url}/anime/search?keyword={urllib.parse.quote_plus(anime_url)}"
@@ -353,7 +366,7 @@ class cantarellatvDownloader:
                     success = False
             return success
         else:
-            return self._download_with_retry(url, quality=quality, name_override=name_override, season_override=season_override, ep_num_override=ep_num_override):
+            return self._download_with_retry(url, quality=quality, name_override=name_override, season_override=season_override, ep_num_override=ep_num_override)
 
     def _download_with_retry(self, url, quality="auto", name_override=None, season_override=None, ep_num_override=None, max_retries=3):
         for i in range(max_retries):
@@ -432,31 +445,4 @@ class cantarellatvDownloader:
                 "-H", "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                 "-H", f"Referer: {self.base_url}/",
                 "--check-segments-count", "False",
-                "-mt",
-                "--thread-count", "50",
-                "--download-retry-count", "5"
-            ]
-
-            if self.proxy:
-                cmd += ["--custom-proxy", self.proxy]
-
-            if quality == "1080":
-                cmd += ["-sv", "res='1080':for=best"]
-            elif quality == "720":
-                cmd += ["-sv", "res='720':for=best"]
-            elif quality == "360":
-                cmd += ["-sv", "res='360':for=best"]
-            else:
-                cmd += ["--auto-select"]
-
-            try:
-                print(f"[{dl_type.upper()}] Running: {' '.join(cmd[:3])}... (binary: {cmd[0]})", flush=True)
-
-                if not _os.path.isfile(cmd[0]):
-                    print(f"Binary not found at: {cmd[0]}", flush=True)
-                    return False
-
-                process = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subproc
+          
