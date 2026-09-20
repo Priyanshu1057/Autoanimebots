@@ -16,6 +16,60 @@ from threading import Thread
 from cantarella.scraper.megacloud import Megacloud
 
 
+class AnimeResult(dict):
+    """
+    Robust dictionary representing an anime result.
+    Supports dict key access: res['id'], res['title'], etc.
+    Supports attribute access: res.id, res.title.
+    Supports string methods & conversion: str(res) returns id, res.split(), etc.
+    Supports integer index: res[0] returns first char of id without crashing.
+    """
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._str_val = str(self.get('id', ''))
+
+    def __str__(self):
+        return self._str_val
+
+    def __repr__(self):
+        return super().__repr__()
+
+    def __getattr__(self, name):
+        if name in self:
+            return self[name]
+        if hasattr(self._str_val, name):
+            return getattr(self._str_val, name)
+        raise AttributeError(f"'AnimeResult' object has no attribute '{name}'")
+
+    def __getitem__(self, key):
+        if isinstance(key, int):
+            return self._str_val[key] if key < len(self._str_val) else ""
+        return super().get(key, None)
+
+    def get(self, key, default=None):
+        return super().get(key, default)
+
+
+class AnimeList(list):
+    """
+    Robust list of AnimeResult objects.
+    Supports iteration (for res in results:),
+    direct dict-style key access (results['id']) if caller didn't loop,
+    and safe .get() method.
+    """
+    def __getitem__(self, key):
+        if isinstance(key, str):
+            if len(self) > 0 and isinstance(self[0], dict):
+                return self[0].get(key)
+            return None
+        return super().__getitem__(key)
+
+    def get(self, key, default=None):
+        if len(self) > 0 and isinstance(self[0], dict):
+            return self[0].get(key, default)
+        return default
+
+
 class cantarellatvDownloader:
     def __init__(self, download_path="anime_downloads", progress_queue=None):
         self.download_path = Path(download_path)
@@ -123,7 +177,7 @@ class cantarellatvDownloader:
                 info = self.get_anime_info(slug)
                 if info:
                     title_str = info['title']['english'] if isinstance(info.get('title'), dict) else str(info.get('title', slug))
-                    return [{
+                    return AnimeList([AnimeResult({
                         "id": str(info.get('id') or anime_id or slug.split('-')[-1]),
                         "title": title_str,
                         "name": title_str,
@@ -133,9 +187,9 @@ class cantarellatvDownloader:
                         "image": info.get('poster'),
                         "url": f"{self.base_url}/watch/{slug}",
                         "link": f"{self.base_url}/watch/{slug}",
-                    }]
+                    })])
                 clean_title = re.sub(r'-\d+$', '', slug).replace('-', ' ').title()
-                return [{
+                return AnimeList([AnimeResult({
                     "id": str(anime_id or slug.split('-')[-1]),
                     "title": clean_title,
                     "name": clean_title,
@@ -145,7 +199,7 @@ class cantarellatvDownloader:
                     "image": None,
                     "url": f"{self.base_url}/watch/{slug}",
                     "link": f"{self.base_url}/watch/{slug}",
-                }]
+                })])
 
         search_url = f"{self.ajax_url}/anime/search?keyword={urllib.parse.quote_plus(query_str)}"
         results = []
@@ -185,7 +239,7 @@ class cantarellatvDownloader:
                         anime_id = slug.split("-")[-1]
                         clean_title = html.unescape(title)
 
-                        results.append({
+                        results.append(AnimeResult({
                             "title": clean_title,
                             "name": clean_title,
                             "id": str(anime_id),
@@ -195,12 +249,12 @@ class cantarellatvDownloader:
                             "image": poster,
                             "url": f"{self.base_url}{href}",
                             "link": f"{self.base_url}{href}",
-                        })
+                        }))
                     if results:
-                        return results
+                        return AnimeList(results)
         except Exception as e:
             print(f"Error in search_anime: {e}")
-        return results
+        return AnimeList(results)
 
     def search(self, query):
         """Alias for search_anime."""
@@ -281,7 +335,7 @@ class cantarellatvDownloader:
                 clean_title = html.unescape(title)
                 clean_jp = html.unescape(title_jp)
 
-                return {
+                return AnimeResult({
                     "id": str(internal_id),
                     "slug": slug,
                     "title": {
@@ -296,7 +350,7 @@ class cantarellatvDownloader:
                     "image": poster,
                     "url": url,
                     "link": url,
-                }
+                })
         except Exception as e:
             print(f"Anime info error: {e}")
         return None
@@ -326,7 +380,7 @@ class cantarellatvDownloader:
                     ep_m = re.search(r'class=["\']ep[^"\']*["\'][^>]*>([^<]+)<', inner)
                     slug = href.replace("/watch/", "").strip("/")
                     title = title_m.group(1).strip() if title_m else slug
-                    results.append({
+                    results.append(AnimeResult({
                         "id": str(slug.split("-")[-1]),
                         "slug": slug,
                         "title": title,
@@ -336,11 +390,11 @@ class cantarellatvDownloader:
                         "episode": ep_m.group(1).strip() if ep_m else "",
                         "url": f"{self.base_url}{href}",
                         "link": f"{self.base_url}{href}",
-                    })
-                return results
+                    }))
+                return AnimeList(results)
         except Exception as e:
             print(f"Error fetching schedule: {e}")
-        return []
+        return AnimeList([])
 
     def get_episode_servers(self, anime_id, ep_num):
         """Get server options for a specific episode."""
