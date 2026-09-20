@@ -48,13 +48,11 @@ class cantarellatvDownloader:
         ]
         for p in candidates:
             if p.exists():
-                print(f"Found N_m3u8DL-RE binary at: {p}")
                 return p
         which_path = shutil.which("N_m3u8DL-RE")
         if which_path:
-            print(f"Found N_m3u8DL-RE in PATH: {which_path}")
             return Path(which_path)
-        raise FileNotFoundError(f"N_m3u8DL-RE binary not found in {candidates} or PATH")
+        raise FileNotFoundError("N_m3u8DL-RE binary not found in binary/ or PATH")
 
     def _format_bytes(self, bytes_num):
         if bytes_num == 0:
@@ -111,11 +109,7 @@ class cantarellatvDownloader:
         kw = urllib.parse.quote_plus(anime_name)
         search_url = f"{self.ajax_url}/anime/search?keyword={kw}"
         try:
-            resp = self.session.get(
-                search_url,
-                headers=self.ajax_headers,
-                impersonate="chrome"
-            )
+            resp = self.session.get(search_url, headers=self.ajax_headers, impersonate="chrome120")
             if resp.status_code == 200:
                 data = resp.json()
                 html_content = ""
@@ -137,28 +131,15 @@ class cantarellatvDownloader:
                     anime_id = slug.split("-")[-1]
 
                     ep_list_url = f"{self.ajax_url}/episode/list/{anime_id}"
-                    headers = {
-                        **self.ajax_headers,
-                        "Referer": f"{self.base_url}/watch/{slug}"
-                    }
-                    resp_eps = self.session.get(
-                        ep_list_url,
-                        headers=headers,
-                        impersonate="chrome"
-                    )
+                    headers = {**self.ajax_headers, "Referer": f"{self.base_url}/watch/{slug}"}
+                    resp_eps = self.session.get(ep_list_url, headers=headers, impersonate="chrome120")
                     if resp_eps.status_code == 200:
                         ep_data = resp_eps.json()
                         ep_html = ep_data.get("result", "") if isinstance(ep_data, dict) else resp_eps.text
 
-                        ep_match = re.search(
-                            rf'data-num=["\']{ep_num}["\'][^>]*data-ids=["\']([^"\']+)["\']',
-                            ep_html
-                        )
+                        ep_match = re.search(rf'data-num=["\']{ep_num}["\'][^>]*data-ids=["\']([^"\']+)["\']', ep_html)
                         if not ep_match:
-                            ep_match = re.search(
-                                rf'data-ids=["\']([^"\']+)["\'][^>]*data-num=["\']{ep_num}["\']',
-                                ep_html
-                            )
+                            ep_match = re.search(rf'data-ids=["\']([^"\']+)["\'][^>]*data-num=["\']{ep_num}["\']', ep_html)
 
                         if ep_match:
                             return ep_match.group(1).replace("&amp;", "&")
@@ -166,6 +147,51 @@ class cantarellatvDownloader:
         except Exception as e:
             print(f"Error in search_cantarella: {e}")
         return None
+
+    def search_anime(self, query):
+        return self.search_cantarella(query)
+
+    def get_schedule(self, date_str=None):
+        url = f"{self.ajax_url}/schedule"
+        if date_str:
+            url += f"?date={date_str}"
+        try:
+            resp = self.session.get(url, headers=self.ajax_headers, impersonate="chrome120")
+            if resp.status_code == 200:
+                data = resp.json()
+                raw_html = data.get("result", "") or data.get("html", "")
+
+                pattern = re.compile(
+                    r'<a[^>]+href=[\'\"]([^\'\"]+)[\'\"][^>]*>.*?'
+                    r'<div[^>]+class=[\'\"]time[^\'\"]*[\'\"][^>]*>([^<]+)</div>.*?'
+                    r'<span>([^<]+)</span>.*?'
+                    r'<div[^>]+class=[\'\"][^\'\"]*(?:title|name)[^\'\"]*[\'\"][^>]*>([^<]+)</div>',
+                    re.DOTALL
+                )
+
+                schedule_list = []
+                for href, time_str, ep_str, title in pattern.findall(raw_html):
+                    clean_title = html.unescape(title.strip())
+                    slug = href.replace('/watch/', '').strip('/')
+                    anime_id = slug.split('/')[0].split('-')[-1]
+                    ep_num = re.sub(r'[^\d.]', '', ep_str).strip()
+                    schedule_list.append({
+                        "id": anime_id,
+                        "anime_id": anime_id,
+                        "slug": slug,
+                        "title": clean_title,
+                        "name": clean_title,
+                        "time": time_str.strip(),
+                        "episode": ep_str.strip(),
+                        "ep": ep_str.strip(),
+                        "ep_number": ep_num,
+                        "url": f"{self.base_url}{href}",
+                        "link": f"{self.base_url}{href}",
+                    })
+                return schedule_list
+        except Exception as e:
+            print(f"Error fetching schedule: {e}")
+        return []
 
     def get_episode_data(self, ep_id, slug=None):
         ep_id_str = str(ep_id).replace("&amp;", "&")
@@ -180,11 +206,7 @@ class cantarellatvDownloader:
 
         result = {'sub': None, 'dub': None}
         try:
-            resp_servers = self.session.get(
-                server_url,
-                headers=headers,
-                impersonate="chrome"
-            )
+            resp_servers = self.session.get(server_url, headers=headers, impersonate="chrome120")
             if resp_servers.status_code != 200:
                 return None
 
@@ -211,7 +233,6 @@ class cantarellatvDownloader:
                     for sv_id, link_id, sname in sorted_lis:
                         sources = self._get_sources(link_id, anime_id, ep_num, slug)
                         if sources and sources.get('sources'):
-                            print(f"Success! Found sources on {sname.strip()}")
                             return sources
                 return None
 
@@ -230,11 +251,7 @@ class cantarellatvDownloader:
             referer = f"{self.base_url}/watch/{slug or anime_id or 'anime'}/ep-{ep_num or 1}"
             headers = {**self.ajax_headers, "Referer": referer}
 
-            resp_sources = self.session.get(
-                sources_url,
-                headers=headers,
-                impersonate="chrome"
-            )
+            resp_sources = self.session.get(sources_url, headers=headers, impersonate="chrome120")
             if resp_sources.status_code != 200:
                 return None
 
@@ -254,7 +271,7 @@ class cantarellatvDownloader:
                         if isinstance(extracted.get('sources'), list) and extracted['sources']:
                             return extracted
                     except Exception as e:
-                        print(f"Megacloud extraction fallback: {e}")
+                        print(f"Megacloud fallback: {e}")
 
                 return {
                     "sources": [
@@ -280,7 +297,7 @@ class cantarellatvDownloader:
         anime_name = None
         try:
             page_url = f"{self.base_url}/watch/{slug}"
-            resp_page = self.session.get(page_url, headers=self.headers, impersonate="chrome")
+            resp_page = self.session.get(page_url, headers=self.headers, impersonate="chrome120")
             if resp_page.status_code == 200:
                 body = resp_page.text
                 title_match = re.search(r'<h1[^>]+class=["\'][^"\']*title[^"\']*["\'][^>]*>([^<]+)</h1>', body, re.I)
@@ -293,13 +310,13 @@ class cantarellatvDownloader:
                     if jp_match:
                         anime_name = html.unescape(jp_match.group(1).strip())
         except Exception as e:
-            print(f"Could not fetch anime title from page: {e}")
+            print(f"Could not fetch title: {e}")
 
         ep_list_url = f"{self.ajax_url}/episode/list/{anime_id}"
         headers = {**self.ajax_headers, "Referer": f"{self.base_url}/watch/{slug}"}
 
         try:
-            resp_eps = self.session.get(ep_list_url, headers=headers, impersonate="chrome")
+            resp_eps = self.session.get(ep_list_url, headers=headers, impersonate="chrome120")
             if resp_eps.status_code == 200:
                 ep_data = resp_eps.json()
                 ep_html = ep_data.get("result", "") if isinstance(ep_data, dict) else resp_eps.text
@@ -337,24 +354,16 @@ class cantarellatvDownloader:
             kw = urllib.parse.quote_plus(anime_url)
             search_url = f"{self.ajax_url}/anime/search?keyword={kw}"
             try:
-                resp = self.session.get(
-                    search_url,
-                    headers=self.ajax_headers,
-                    impersonate="chrome"
-                )
+                resp = self.session.get(search_url, headers=self.ajax_headers, impersonate="chrome120")
                 if resp.status_code == 200:
                     data = resp.json()
-                    html_content = (
-                        data.get("result", {}).get("html", "")
-                        if isinstance(data.get("result"), dict)
-                        else data.get("result", "")
-                    )
+                    html_content = data.get("result", {}).get("html", "") if isinstance(data.get("result"), dict) else data.get("result", "")
                     items = re.findall(r'<a[^>]+href=["\'](/watch/[^"\']+)["\']', html_content)
                     if items:
                         slug = items[0].replace("/watch/", "").strip("/")
                         anime_id = slug.split("-")[-1]
             except Exception as e:
-                print(f"Error searching for episodes list: {e}")
+                print(f"Error searching episodes: {e}")
                 return []
 
         if not anime_id:
@@ -364,11 +373,7 @@ class cantarellatvDownloader:
         headers = {**self.ajax_headers, "Referer": f"{self.base_url}/watch/{slug}"}
 
         try:
-            resp_eps = self.session.get(
-                ep_list_url,
-                headers=headers,
-                impersonate="chrome"
-            )
+            resp_eps = self.session.get(ep_list_url, headers=headers, impersonate="chrome120")
             if resp_eps.status_code == 200:
                 data = resp_eps.json()
                 ep_html = data.get("result", "") if isinstance(data, dict) else resp_eps.text
@@ -425,9 +430,8 @@ class cantarellatvDownloader:
                 )
                 if ok:
                     return True
-                print(f"Download attempt {i+1} failed. Retrying...")
             except Exception as e:
-                print(f"Download error on attempt {i+1}: {e}")
+                print(f"Attempt {i+1} failed: {e}")
             time.sleep(5)
         return False
 
@@ -474,298 +478,4 @@ class cantarellatvDownloader:
         )
 
         base_filename = sanitize(base_filename_str)
-        clean_ep_id = sanitize(ep_id.replace('&', '_').replace('=', '_'))
-        task_dir = self.download_path / f"{clean_ep_id}_{qual_str}"
-        task_dir.mkdir(exist_ok=True)
-
-        video_temp = task_dir / f"{base_filename}_sub.mkv"
-        audio_temp = task_dir / f"{base_filename}_dub.mkv"
-        final_file = self.download_path / f"{base_filename}.mkv"
-
-        data = all_data.get('sub') or all_data.get('dub')
-        source_item = data['sources'][0]
-        m3u8_url = source_item.get('file') or source_item.get('url')
-
-        status_msg = f"📥 **Downloading: {final_name} [{qual_str}p]**\nPlease wait..."
-        self.progress_queue.put({'status': status_msg})
-
-        def run_n_m3u8dl(dl_url, save_name, dl_type='sub', quality="auto"):
-            ua_header = "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-            ref_header = f"Referer: {self.base_url}/"
-            cmd = []
-            cmd.append(str(self.binary_path))
-            cmd.append(dl_url)
-            cmd.append("--save-dir")
-            cmd.append(str(task_dir))
-            cmd.append("--save-name")
-            cmd.append(save_name)
-            cmd.append("-H")
-            cmd.append(ua_header)
-            cmd.append("-H")
-            cmd.append(ref_header)
-            cmd.append("--check-segments-count")
-            cmd.append("False")
-            cmd.append("-mt")
-            cmd.append("--thread-count")
-            cmd.append("50")
-            cmd.append("--download-retry-count")
-            cmd.append("5")
-
-            if self.proxy:
-                cmd.append("--custom-proxy")
-                cmd.append(self.proxy)
-
-            if quality == "1080":
-                cmd.extend(["-sv", "res='1080':for=best"])
-            elif quality == "720":
-                cmd.extend(["-sv", "res='720':for=best"])
-            elif quality == "360":
-                cmd.extend(["-sv", "res='360':for=best"])
-            else:
-                cmd.append("--auto-select")
-
-            try:
-                bin_preview = ' '.join(cmd[:3])
-                print(f"[{dl_type.upper()}] Running: {bin_preview}", flush=True)
-
-                if not _os.path.isfile(cmd[0]):
-                    print(f"Binary not found at: {cmd[0]}", flush=True)
-                    return False
-
-                process = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    bufsize=0
-                )
-
-                last_lines = []
-                buffer = b""
-                while True:
-                    char = process.stdout.read(1)
-                    if not char:
-                        break
-                    if char in (b'\r', b'\n'):
-                        try:
-                            line = buffer.decode('utf-8', errors='replace').strip()
-                        except:
-                            line = ""
-
-                        if line:
-                            line = re.sub(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])', '', line)
-                            last_lines.append(line)
-                            if len(last_lines) > 5:
-                                last_lines.pop(0)
-
-                            if "%" in line:
-                                print(f"[{dl_type.upper()}] {line}", flush=True)
-                                percent_match = re.search(r"(\d+(\.\d+)?)%", line)
-                                parts = re.split(r"\d+(\.\d+)?%", line)
-                                speed_match = None
-                                if len(parts) > 1:
-                                    after_percent = parts[-1]
-                                    speed_match = re.search(r"(\d+(\.\d+)?\s*[MKG]?i?(B/s|bps|b/s|bit/s))", after_percent, re.I)
-                                    if not speed_match:
-                                        speed_match = re.search(r"(\d+(\.\d+)?\s*\S+/(s|sec))", after_percent, re.I)
-
-                                if not speed_match:
-                                    speed_match = re.search(r"(\d+(\.\d+)?\s*[MKG]?i?(B/s|bps|b/s|bit/s))", line, re.I)
-
-                                size_match = re.search(r"(\d+(\.\d+)?\s*\S+)\s*/\s*(\d+(\.\d+)?\s*\S+)", line, re.I)
-
-                                if percent_match:
-                                    pct_val = percent_match.group(1)
-                                    speed_val = speed_match.group(1) if speed_match else "0 MB/s"
-
-                                    progress_data = {
-                                        'percent': f"{pct_val}%",
-                                        'speed': speed_val,
-                                        'downloaded': size_match.group(1) if size_match else "0 MB",
-                                        'total': size_match.group(3) if size_match else "0 MB",
-                                        'type': dl_type,
-                                        'title': ep_title
-                                    }
-                                    self.progress_queue.put(progress_data)
-                            else:
-                                print(f"[{dl_type.upper()}] {line}", flush=True)
-                        buffer = b""
-                    else:
-                        buffer += char
-
-                process.wait()
-                exit_code = process.returncode
-                if exit_code != 0:
-                    error_detail = '\n'.join(last_lines) if last_lines else 'No output captured'
-                    print(f"[{dl_type.upper()}] N_m3u8DL-RE exited with code {exit_code}:\n{error_detail}", flush=True)
-                return exit_code == 0
-            except Exception as e:
-                print(f"Error running N_m3u8DL-RE: {e}", flush=True)
-                return False
-
-        # Dub settings
-        dub_downloaded = [False]
-        dub_thread = None
-        if all_data.get('sub') and all_data.get('dub'):
-            dub_source_item = all_data['dub']['sources'][0]
-            dub_url = dub_source_item.get('file') or dub_source_item.get('url')
-
-            def download_dub():
-                save_name = f"{base_filename}_dub"
-                if run_n_m3u8dl(dub_url, save_name, dl_type='dub', quality=quality):
-                    for ext in ['.mp4', '.m4a', '.mkv', '.ts']:
-                        p = task_dir / f"{save_name}{ext}"
-                        if p.exists():
-                            p.rename(audio_temp)
-                            dub_downloaded[0] = True
-                            break
-                else:
-                    self.progress_queue.put({'status': "⚠️ **Dub download failed**\nProceeding with Japanese only."})
-
-            dub_thread = Thread(target=download_dub)
-            dub_thread.start()
-
-        # Start Sub download in main thread
-        save_name_sub = f"{base_filename}_sub"
-        if run_n_m3u8dl(m3u8_url, save_name_sub, dl_type='sub', quality=quality):
-            for ext in ['.mp4', '.mkv', '.ts']:
-                p = task_dir / f"{save_name_sub}{ext}"
-                if p.exists():
-                    p.rename(video_temp)
-                    break
-        else:
-            self.progress_queue.put({'error': "Video download failed"})
-            if dub_thread:
-                dub_thread.join()
-            return False
-
-        if dub_thread:
-            dub_thread.join()
-
-        dub_downloaded = dub_downloaded[0]
-
-        # Subtitles download
-        sub_files = []
-        if data.get('tracks'):
-            subs = [t for t in data['tracks'] if t.get('kind') == 'captions']
-            for i, s in enumerate(subs):
-                lang = s.get('label', f'sub_{i}').lower().replace(' ', '_')
-                sub_path = task_dir / f"{base_filename}_{lang}.vtt"
-                try:
-                    r = self.session.get(s['file'], timeout=10)
-                    if r.status_code == 200:
-                        with open(sub_path, 'wb') as f:
-                            f.write(r.content)
-                        sub_files.append((sub_path, lang))
-                except:
-                    pass
-
-        # Merge with ffmpeg
-        ffmpeg_exe = 'ffmpeg'
-
-        if not video_temp.exists():
-            for f in task_dir.iterdir():
-                if f.name.startswith(f"{base_filename}_sub."):
-                    f.replace(video_temp)
-                    break
-
-        if not shutil.which(ffmpeg_exe) or (not sub_files and not dub_downloaded):
-            if video_temp.exists():
-                video_temp.replace(final_file)
-
-            try:
-                shutil.rmtree(task_dir)
-            except:
-                pass
-
-            self.progress_queue.put({'finished': True, 'filename': str(final_file), 'title': base_filename})
-            return True
-
-        self.progress_queue.put({'status': f"🎬 **Merging Tracks for: {ep_title}**\nPlease wait..."})
-
-        cmd = [ffmpeg_exe, '-y']
-
-        if video_temp.exists():
-            cmd.extend(['-i', str(video_temp)])
-        else:
-            self.progress_queue.put({'error': 'Video file disappeared before merge.'})
-            return False
-
-        if dub_downloaded and audio_temp.exists():
-            cmd.extend(['-i', str(audio_temp)])
-        else:
-            dub_downloaded = False
-
-        valid_subs = []
-        for sub_path, lang in sub_files:
-            if sub_path.exists():
-                cmd.extend(['-i', str(sub_path)])
-                valid_subs.append((sub_path, lang))
-
-        sub_files = valid_subs
-
-        cmd.extend(['-map', '0:v'])
-        cmd.extend(['-map', '0:a'])
-        if dub_downloaded:
-            cmd.extend(['-map', '1:a:0'])
-
-        sub_offset = 2 if dub_downloaded else 1
-        for i in range(len(sub_files)):
-            cmd.extend(['-map', f'{i + sub_offset}:s'])
-
-        cmd.extend(['-c', 'copy', '-c:s', 'srt'])
-        cmd.extend(['-metadata:s:a:0', 'language=jpn', '-metadata:s:a:0', 'title=Japanese'])
-        if dub_downloaded:
-            cmd.extend(['-metadata:s:a:1', 'language=eng', '-metadata:s:a:1', 'title=English'])
-
-        if sub_files:
-            cmd.extend(['-disposition:s:0', 'default'])
-
-        cmd.append(str(final_file))
-
-        try:
-            subprocess.run(cmd, check=True, capture_output=True)
-            try:
-                shutil.rmtree(task_dir)
-            except:
-                pass
-
-            self.progress_queue.put({'finished': True, 'filename': str(final_file), 'title': base_filename})
-            return True
-        except Exception:
-            if video_temp.exists():
-                video_temp.replace(final_file)
-            elif not final_file.exists():
-                for f in task_dir.iterdir():
-                    if f.name.startswith(f"{base_filename}_sub."):
-                        f.replace(final_file)
-                        break
-
-            try:
-                shutil.rmtree(task_dir)
-            except:
-                pass
-
-            self.progress_queue.put({'finished': True, 'filename': str(final_file), 'title': base_filename})
-            return True
-
-    def download_all_episodes(self, anime_url, quality="auto"):
-        eps = self.list_episodes(anime_url)
-        for ep in eps:
-            self.download_episode(ep['url'], quality=quality)
-        return True
-
-    def download_range(self, anime_url, start, end, quality="auto"):
-        eps = self.list_episodes(anime_url)
-        for ep in eps:
-            try:
-                num = int(float(ep.get('ep_number', 0)))
-                if not num:
-                    match = re.search(r'Episode (\d+)', ep['title'])
-                    if match:
-                        num = int(match.group(1))
-
-                if start <= num <= end:
-                    self.download_episode(ep['url'], quality=quality)
-            except:
-                pass
-        return True
+        clean_ep_id = sanitize(ep_id.repla
