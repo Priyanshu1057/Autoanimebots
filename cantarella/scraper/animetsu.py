@@ -70,6 +70,47 @@ class AnimeList(list):
         return default
 
 
+class EpisodeIdStr(str):
+    """
+    Subclasses str so that it behaves 100% identically to a Python string
+    (regex, string concatenation, format, split, isinstance(x, str)),
+    while also supporting dictionary access x['id'] and x.id.
+    This prevents `TypeError: string indices must be integers, not 'str'`
+    when plugin code expects a dictionary or an ID string.
+    """
+    def __new__(cls, val, anime_id=None):
+        instance = super().__new__(cls, str(val) if val is not None else "")
+        if anime_id:
+            instance.anime_id = str(anime_id)
+        else:
+            cleaned = str(val or "").split("&")[0].split("?")[0]
+            instance.anime_id = cleaned.split("-")[-1]
+        return instance
+
+    def __getattr__(self, name):
+        if name in ("id", "anime_id"):
+            return self.anime_id
+        if name in ("ep_id", "episode_id"):
+            return str(self)
+        raise AttributeError(f"'EpisodeIdStr' object has no attribute '{name}'")
+
+    def __getitem__(self, key):
+        if isinstance(key, str):
+            if key in ("id", "anime_id"):
+                return self.anime_id
+            if key in ("ep_id", "episode_id"):
+                return str(self)
+            return None
+        return super().__getitem__(key)
+
+    def get(self, key, default=None):
+        if key in ("id", "anime_id"):
+            return self.anime_id
+        if key in ("ep_id", "episode_id"):
+            return str(self)
+        return default
+
+
 class cantarellatvDownloader:
     def __init__(self, download_path="anime_downloads", progress_queue=None):
         self.download_path = Path(download_path)
@@ -144,7 +185,7 @@ class cantarellatvDownloader:
     def get_episode_id(self, url):
         slug, anime_id, ep_num = self._parse_url_slug(url)
         if anime_id:
-            return f"{anime_id}&eps={ep_num}"
+            return EpisodeIdStr(f"{anime_id}&eps={ep_num}", anime_id=anime_id)
 
         anime_name_match = (
             re.search(r'/([^/]+)-episode-(\d+)', url)
@@ -157,7 +198,7 @@ class cantarellatvDownloader:
 
         match = re.search(r'-(\d+)$', url)
         if match:
-            return f"{match.group(1)}&eps=1"
+            return EpisodeIdStr(f"{match.group(1)}&eps=1", anime_id=match.group(1))
         return None
 
     def search_anime(self, query):
@@ -281,8 +322,8 @@ class cantarellatvDownloader:
                         ep_match = re.search(rf'data-ids=["\']([^"\']+)["\'][^>]*data-num=["\']{ep_num}["\']', ep_html)
 
                     if ep_match:
-                        return ep_match.group(1).replace("&amp;", "&")
-                    return f"{anime_id}&eps={ep_num}"
+                        return EpisodeIdStr(ep_match.group(1).replace("&amp;", "&"), anime_id=anime_id)
+                    return EpisodeIdStr(f"{anime_id}&eps={ep_num}", anime_id=anime_id)
             except Exception as e:
                 print(f"Error resolving episode ID: {e}")
         return None
@@ -395,6 +436,69 @@ class cantarellatvDownloader:
         except Exception as e:
             print(f"Error fetching schedule: {e}")
         return AnimeList([])
+
+    def fetch_recently_updated(self, page=1, per_page=12):
+        """
+        Fetch recently updated anime from Aniwave/Cantarella (/updated).
+        Used by the bot's ongoing task loop: checking for recently updated anime.
+        """
+        url = f"{self.base_url}/updated?page={page}"
+        try:
+            resp = self.session.get(url, headers=self.headers, impersonate="chrome120")
+            if resp.status_code == 200:
+                results = []
+                pattern = r"<a\s+class=[\x27\"][^\x27\"]*\bname\b[^\x27\"]*[\x27\"][^>]*href=[\x27\"](/watch/([^\x27\"]+))[\x27\"][^>]*>([^<]+)</a>"
+                matches = re.findall(pattern, resp.text)
+                if not matches:
+                    pattern = r"<a\s+[^>]*href=[\x27\"](/watch/([^\x27\"]+))[\x27\"][^>]*class=[\x27\"][^\x27\"]*\bname\b[^\x27\"]*[\x27\"][^>]*>([^<]+)</a>"
+                    matches = re.findall(pattern, resp.text)
+
+                for href, slug, raw_title in matches[:per_page]:
+                    anime_id = slug.split("-")[-1]
+                    clean_title = html.unescape(raw_title.strip())
+                    clean_slug = slug.strip("/")
+
+                    results.append(AnimeResult({
+                        "id": str(anime_id),
+                        "title": clean_title,
+                        "name": clean_title,
+                        "slug": clean_slug,
+                        "url": f"{self.base_url}/watch/{clean_slug}",
+                        "link": f"{self.base_url}/watch/{clean_slug}",
+                    }))
+                return AnimeList(results)
+        except Exception as e:
+            print(f"Error fetching recently updated anime: {e}")
+        return AnimeList([])
+
+    def get_home_sections(self):
+        """Extract featured spotlight and recent anime from the homepage."""
+        url = f"{self.base_url}/home"
+        try:
+            resp = self.session.get(url, headers=self.headers, impersonate="chrome120")
+            if resp.status_code == 200:
+                spotlights = re.findall(
+                    r'<div[^>]+class=["\']swiper-slide item["\'][^>]*>.*?<h2[^>]+class=["\']title d-title["\'][^>]*data-jp=["\']([^"\']*)["\']>([^<]+)</h2>.*?<div[^>]+class=["\']synopsis["\']>([^<]+)</div>.*?href=["\'](/watch/[^"\']+)["\']',
+                    resp.text,
+                    re.DOTALL,
+                )
+                items = []
+                for jp_title, en_title, syn, watch_url in spotlights:
+                    slug = watch_url.replace("/watch/", "").strip("/")
+                    items.append(AnimeResult({
+                        "title": html.unescape(en_title.strip()),
+                        "name": html.unescape(en_title.strip()),
+                        "title_jp": html.unescape(jp_title.strip()),
+                        "synopsis": html.unescape(syn.strip()),
+                        "url": f"{self.base_url}{watch_url}",
+                        "link": f"{self.base_url}{watch_url}",
+                        "id": str(slug.split("-")[-1]),
+                        "slug": slug,
+                    }))
+                return {"spotlight": AnimeList(items)}
+        except Exception as e:
+            print(f"Home sections error: {e}")
+        return {"spotlight": AnimeList([])}
 
     def get_episode_servers(self, anime_id, ep_num):
         """Get server options for a specific episode."""
@@ -1006,3 +1110,7 @@ class cantarellatvDownloader:
 # Backward-compatible aliases
 AniwaveScraper = cantarellatvDownloader
 AnimetsuScraper = cantarellatvDownloader
+CantarellaScraper = cantarellatvDownloader
+CantarellatvScraper = cantarellatvDownloader
+Animetsu = cantarellatvDownloader
+Cantarella = cantarellatvDownloader

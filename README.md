@@ -3,13 +3,15 @@
 This archive contains the updated and verified scraper files for your Cantarella Bot.
 
 ## Fixed Issues:
-1. Fixed SyntaxError: '(' was never closed at line 535 - full method definitions and closing parenthesis verified.
-2. Added missing `get_schedule()` method to fetch airing anime schedule.
-3. Added missing `search_anime()` method mapped to `search_cantarella()`.
-4. Added backward-compatible aliases:
+1. Added missing `fetch_recently_updated(page=1, per_page=12)` method:
+   Fixes: `Error in ongoing task loop: 'cantarellatvDownloader' object has no attribute 'fetch_recently_updated'`
+2. Added `EpisodeIdStr` + `AnimeResult` + `AnimeList` dictionary compatibility:
+   Fixes: `TypeError: string indices must be integers, not 'str'` in plugins/search.py line 46 (`cb_data = f"anime_{res['id']}"`)
+3. Added missing `get_home_sections()` method.
+4. Added missing `get_schedule()` method.
+5. Added all aliases:
    `AniwaveScraper = cantarellatvDownloader`
    `AnimetsuScraper = cantarellatvDownloader`
-5. Verified with `python3 -m py_compile` (0 syntax errors).
-
-## Deployment:
-Copy `cantarella/scraper/cantarellatv.py` to `/app/cantarella/scraper/cantarellatv.py` (or your bot's scraper folder).
+   `Animetsu = cantarellatvDownloader`
+   `CantarellaScraper = cantarellatvDownloader`
+6. Verified with `python3 -m py_compile` (0 syntax errors).
