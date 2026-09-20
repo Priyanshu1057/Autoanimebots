@@ -42,19 +42,17 @@ class cantarellatvDownloader:
 
     def _get_binary_path(self):
         candidates = [
-            Path("binary") / "N_m3u8DL-RE",           # Linux (local binary folder)
-            Path("binary") / "N_m3u8DL-RE.exe",       # Windows local
-            Path("/usr/local/bin/N_m3u8DL-RE"),        # Docker / Heroku container
+            Path("binary") / "N_m3u8DL-RE",
+            Path("binary") / "N_m3u8DL-RE.exe",
+            Path("/usr/local/bin/N_m3u8DL-RE"),
         ]
         for p in candidates:
             if p.exists():
-                print(f"Found N_m3u8DL-RE binary at: {p}")
                 return p
         which_path = shutil.which("N_m3u8DL-RE")
         if which_path:
-            print(f"Found N_m3u8DL-RE in PATH: {which_path}")
             return Path(which_path)
-        raise FileNotFoundError(f"N_m3u8DL-RE binary not found. Checked: {candidates} and PATH")
+        return Path("N_m3u8DL-RE")
 
     def _format_bytes(self, bytes_num):
         if bytes_num == 0:
@@ -66,49 +64,93 @@ class cantarellatvDownloader:
         return f"{s} {size_name[i]}"
 
     def _parse_url_slug(self, url):
-        """Extracts slug, numeric anime id, and episode number from any Aniwave/Aniwatch URL."""
+        url_str = str(url).strip()
         slug = None
-        match = re.search(r'watch/([^/?#]+)', url)
+        match = re.search(r'watch/([^/?#]+)', url_str)
         if match:
             slug = match.group(1).strip()
         else:
-            match = re.search(r'/([^/]+)-episode-(\d+)', url)
+            match = re.search(r'/([^/]+)-episode-(\d+)', url_str)
             if match:
-                slug = match.group(1)
+                slug = match.group(1).strip()
 
         numeric_id = slug.split('-')[-1] if slug else None
 
-        # Episode number extraction
         ep_num = "1"
-        ep_match = re.search(r'/ep-([0-9.]+)', url) or re.search(r'[?&]ep=([0-9.]+)', url) or re.search(r'episode-([0-9.]+)', url)
+        ep_match = (
+            re.search(r'/ep-([0-9.]+)', url_str)
+            or re.search(r'[?&]ep=([0-9.]+)', url_str)
+            or re.search(r'episode-([0-9.]+)', url_str)
+        )
         if ep_match:
             ep_num = ep_match.group(1)
 
         return slug, numeric_id, ep_num
 
     def get_episode_id(self, url):
-        """Returns formatted episode identifier 'anime_id&eps=ep_num' for Aniwave."""
         slug, anime_id, ep_num = self._parse_url_slug(url)
         if anime_id:
             return f"{anime_id}&eps={ep_num}"
 
-        # If passed plain search keyword or title instead of URL
-        anime_name_match = re.search(r'/([^/]+)-episode-(\d+)', url) or re.search(r'watch/([^/]+)-(\d+)', url)
+        anime_name_match = (
+            re.search(r'/([^/]+)-episode-(\d+)', url)
+            or re.search(r'watch/([^/]+)-(\d+)', url)
+        )
         if anime_name_match:
             anime_name = anime_name_match.group(1).replace('-', ' ')
             ep_num = anime_name_match.group(2)
-            return self.search_cantarella(anime_name, ep_num)
+            return self._find_ep_id_by_name(anime_name, ep_num)
 
         match = re.search(r'-(\d+)$', url)
         if match:
             return f"{match.group(1)}&eps=1"
         return None
 
-    def search_cantarella(self, anime_name, ep_num="1"):
-        """Searches Aniwave using the working AJAX search endpoint and returns episode ID."""
-        search_url = f"{self.ajax_url}/anime/search?keyword={urllib.parse.quote_plus(anime_name)}"
+    def search_anime(self, query):
+        """
+        Search anime on Aniwave using AJAX search endpoint or URL.
+        Returns list of dicts: [{'title', 'name', 'id', 'slug', 'type', 'poster', 'image', 'url', 'link'}]
+        """
+        if not query:
+            return []
+
+        query_str = str(query).strip()
+
+        # Handle URL input directly in search
+        if "watch/" in query_str or "aniwaves" in query_str or query_str.startswith("http"):
+            slug, anime_id, _ = self._parse_url_slug(query_str)
+            if slug:
+                info = self.get_anime_info(slug)
+                if info:
+                    title_str = info['title']['english'] if isinstance(info.get('title'), dict) else str(info.get('title', slug))
+                    return [{
+                        "id": str(info.get('id') or anime_id or slug.split('-')[-1]),
+                        "title": title_str,
+                        "name": title_str,
+                        "slug": slug,
+                        "type": info.get('type', 'TV'),
+                        "poster": info.get('poster'),
+                        "image": info.get('poster'),
+                        "url": f"{self.base_url}/watch/{slug}",
+                        "link": f"{self.base_url}/watch/{slug}",
+                    }]
+                clean_title = re.sub(r'-\d+$', '', slug).replace('-', ' ').title()
+                return [{
+                    "id": str(anime_id or slug.split('-')[-1]),
+                    "title": clean_title,
+                    "name": clean_title,
+                    "slug": slug,
+                    "type": "TV",
+                    "poster": None,
+                    "image": None,
+                    "url": f"{self.base_url}/watch/{slug}",
+                    "link": f"{self.base_url}/watch/{slug}",
+                }]
+
+        search_url = f"{self.ajax_url}/anime/search?keyword={urllib.parse.quote_plus(query_str)}"
+        results = []
         try:
-            resp = self.session.get(search_url, headers=self.ajax_headers, impersonate="chrome")
+            resp = self.session.get(search_url, headers=self.ajax_headers, impersonate="chrome120")
             if resp.status_code == 200:
                 data = resp.json()
                 html_content = ""
@@ -119,37 +161,149 @@ class cantarellatvDownloader:
                     elif isinstance(res_val, str):
                         html_content = res_val
 
-                items = re.findall(
-                    r'<a[^>]+class=["\'][^"\']*item[^"\']*["\'][^>]+href=["\'](/watch/[^"\']+)["\'][^>]*>(.*?)</a>',
-                    html_content,
-                    re.DOTALL | re.I
-                )
-                if items:
-                    first_href = items[0][0]
-                    slug = first_href.replace("/watch/", "").strip("/")
-                    anime_id = slug.split("-")[-1]
+                if html_content:
+                    items = re.findall(
+                        r'<a[^>]+class=["\'][^"\']*item[^"\']*["\'][^>]+href=["\'](/watch/[^"\']+)["\'][^>]*>(.*?)</a>',
+                        html_content,
+                        re.DOTALL | re.I
+                    )
+                    for href, inner in items:
+                        name_match = re.search(r'class=["\']name[^"\']*["\'][^>]*data-jp=["\']?([^"\'>]+)?["\']?[^>]*>([^<]+)<', inner)
+                        title = ""
+                        if name_match:
+                            title = name_match.group(2).strip() or name_match.group(1).strip()
+                        else:
+                            title = href.split('/')[-1]
 
-                    ep_list_url = f"{self.ajax_url}/episode/list/{anime_id}"
-                    headers = {**self.ajax_headers, "Referer": f"{self.base_url}/watch/{slug}"}
-                    resp_eps = self.session.get(ep_list_url, headers=headers, impersonate="chrome")
-                    if resp_eps.status_code == 200:
-                        ep_data = resp_eps.json()
-                        ep_html = ep_data.get("result", "") if isinstance(ep_data, dict) else resp_eps.text
+                        poster_match = re.search(r'<img[^>]+src=["\']([^"\']+)["\']', inner)
+                        poster = poster_match.group(1) if poster_match else None
 
-                        # Match episode number in data-num
-                        ep_match = re.search(rf'data-num=["\']{ep_num}["\'][^>]*data-ids=["\']([^"\']+)["\']', ep_html)
-                        if not ep_match:
-                            ep_match = re.search(rf'data-ids=["\']([^"\']+)["\'][^>]*data-num=["\']{ep_num}["\']', ep_html)
+                        type_match = re.search(r'<span[^>]+class=["\']dot["\']>([^<]+)</span>', inner)
+                        anime_type = type_match.group(1).strip().upper() if type_match else "TV"
 
-                        if ep_match:
-                            return ep_match.group(1).replace("&amp;", "&")
-                        return f"{anime_id}&eps={ep_num}"
+                        slug = href.replace("/watch/", "").strip("/")
+                        anime_id = slug.split("-")[-1]
+                        clean_title = html.unescape(title)
+
+                        results.append({
+                            "title": clean_title,
+                            "name": clean_title,
+                            "id": str(anime_id),
+                            "slug": slug,
+                            "type": anime_type,
+                            "poster": poster,
+                            "image": poster,
+                            "url": f"{self.base_url}{href}",
+                            "link": f"{self.base_url}{href}",
+                        })
+                    if results:
+                        return results
         except Exception as e:
-            print(f"Error in search_cantarella: {e}")
+            print(f"Error in search_anime: {e}")
+        return results
+
+    def search(self, query):
+        """Alias for search_anime."""
+        return self.search_anime(query)
+
+    def _find_ep_id_by_name(self, anime_name, ep_num="1"):
+        """Internal helper to resolve episode ID for a given anime title and episode number."""
+        search_results = self.search_anime(anime_name)
+        if search_results:
+            first = search_results[0]
+            slug = first['slug']
+            anime_id = first['id']
+
+            ep_list_url = f"{self.ajax_url}/episode/list/{anime_id}"
+            headers = {**self.ajax_headers, "Referer": f"{self.base_url}/watch/{slug}"}
+            try:
+                resp_eps = self.session.get(ep_list_url, headers=headers, impersonate="chrome")
+                if resp_eps.status_code == 200:
+                    ep_data = resp_eps.json()
+                    ep_html = ep_data.get("result", "") if isinstance(ep_data, dict) else resp_eps.text
+
+                    ep_match = re.search(rf'data-num=["\']{ep_num}["\'][^>]*data-ids=["\']([^"\']+)["\']', ep_html)
+                    if not ep_match:
+                        ep_match = re.search(rf'data-ids=["\']([^"\']+)["\'][^>]*data-num=["\']{ep_num}["\']', ep_html)
+
+                    if ep_match:
+                        return ep_match.group(1).replace("&amp;", "&")
+                    return f"{anime_id}&eps={ep_num}"
+            except Exception as e:
+                print(f"Error resolving episode ID: {e}")
         return None
 
-    def search_anime(self, query):
-        return self.search_cantarella(query)
+    def search_cantarella(self, query, ep_num=None):
+        """
+        Searches anime.
+        If ep_num is provided, returns the episode ID string for backward compatibility.
+        If ep_num is None, returns the list of anime dictionaries.
+        """
+        if ep_num is not None:
+            return self._find_ep_id_by_name(query, ep_num)
+        return self.search_anime(query)
+
+    def get_anime_info(self, anime_id_or_url):
+        """
+        Fetch anime metadata (title, synopsis, internal_id, poster) from the watch page.
+        Returns dict with: id, slug, title, name, synopsis, poster, image, url, link, type
+        """
+        slug = str(anime_id_or_url).replace(self.base_url, "").replace("/watch/", "").strip("/")
+        url = f"{self.base_url}/watch/{slug}"
+        try:
+            resp = self.session.get(url, headers=self.headers, impersonate="chrome120")
+            if resp.status_code == 200:
+                body = resp.text
+                title_match = re.search(r'<h1[^>]+class=["\'][^"\']*title[^"\']*["\'][^>]*>([^<]+)</h1>', body, re.I)
+                if not title_match:
+                    title_match = re.search(r'<h2[^>]+class=["\'][^"\']*title[^"\']*["\'][^>]*>([^<]+)</h2>', body, re.I)
+                if not title_match:
+                    title_match = re.search(r'<h1[^>]*>([^<]+)</h1>', body, re.I)
+                title = title_match.group(1).strip() if title_match else re.sub(r'-\d+$', '', slug).replace('-', ' ').title()
+
+                jp_match = re.search(r'data-jp=["\']([^"\']+)["\']', body)
+                title_jp = jp_match.group(1).strip() if jp_match else title
+
+                syn_match = re.search(r'<div[^>]+class=["\'][^"\']*synopsis[^"\']*["\'][^>]*>(.*?)</div>', body, re.DOTALL | re.I)
+                synopsis = ""
+                if syn_match:
+                    synopsis = re.sub(r'<[^>]+>', '', syn_match.group(1)).strip()
+
+                id_match = re.search(r'data-id=["\']([0-9a-zA-Z]+)["\']', body)
+                internal_id = id_match.group(1) if id_match else slug.split("-")[-1]
+
+                poster_match = re.search(r'<div[^>]+class=["\']poster["\'][^>]*>.*?<img[^>]+src=["\']([^"\']+)["\']', body, re.DOTALL | re.I)
+                poster = poster_match.group(1) if poster_match else None
+
+                type_match = re.search(r'<span[^>]+class=["\']dot["\']>([^<]+)</span>', body)
+                anime_type = type_match.group(1).strip().upper() if type_match else "TV"
+
+                clean_title = html.unescape(title)
+                clean_jp = html.unescape(title_jp)
+
+                return {
+                    "id": str(internal_id),
+                    "slug": slug,
+                    "title": {
+                        "english": clean_title,
+                        "romaji": clean_jp,
+                        "native": clean_jp,
+                    },
+                    "name": clean_title,
+                    "type": anime_type,
+                    "synopsis": html.unescape(synopsis),
+                    "poster": poster,
+                    "image": poster,
+                    "url": url,
+                    "link": url,
+                }
+        except Exception as e:
+            print(f"Anime info error: {e}")
+        return None
+
+    def get_anime(self, anime_id_or_url):
+        """Alias for get_anime_info."""
+        return self.get_anime_info(anime_id_or_url)
 
     def get_schedule(self, date_str=None):
         url = f"{self.ajax_url}/schedule"
@@ -173,7 +327,7 @@ class cantarellatvDownloader:
                     slug = href.replace("/watch/", "").strip("/")
                     title = title_m.group(1).strip() if title_m else slug
                     results.append({
-                        "id": slug.split("-")[-1],
+                        "id": str(slug.split("-")[-1]),
                         "slug": slug,
                         "title": title,
                         "name": title,
@@ -188,11 +342,57 @@ class cantarellatvDownloader:
             print(f"Error fetching schedule: {e}")
         return []
 
+    def get_episode_servers(self, anime_id, ep_num):
+        """Get server options for a specific episode."""
+        slug = str(anime_id).replace(self.base_url, "").replace("/watch/", "").strip("/")
+        numeric_id = slug.split("-")[-1]
+        srv_url = f"{self.ajax_url}/server/list?servers={numeric_id}&eps={ep_num}"
+        headers = {**self.ajax_headers, "Referer": f"{self.base_url}/watch/{slug}/ep-{ep_num}"}
+
+        try:
+            resp = self.session.get(srv_url, headers=headers, impersonate="chrome120")
+            if resp.status_code == 200:
+                data = resp.json()
+                srv_html = data.get("result", "") if isinstance(data, dict) else resp.text
+
+                servers = []
+                types = re.findall(r'<div[^>]+class=["\']type["\'][^>]+data-type=["\']([^"\']+)["\'][^>]*>(.*?)</div>\s*(?=<div class=["\']type["\']|</div>|$)', srv_html, re.DOTALL)
+                for stype, block in types:
+                    lis = re.findall(r'<li[^>]+data-sv-id=["\']([^"\']+)["\'][^>]+data-link-id=["\']([^"\']+)["\'][^>]*>([^<]+)<', block)
+                    for sv_id, link_id, sname in lis:
+                        servers.append({
+                            "type": stype,
+                            "server_id": sv_id,
+                            "link_id": link_id,
+                            "server_name": sname.strip(),
+                        })
+                return servers
+        except Exception as e:
+            print(f"Error fetching servers: {e}")
+        return []
+
+    def get_episode_sources(self, anime_id, ep_num, server='default', source_type='sub'):
+        """Fetch stream embed URL and skip metadata for an episode."""
+        servers = self.get_episode_servers(anime_id, ep_num)
+        if not servers:
+            return None
+
+        candidates = [s for s in servers if s['type'].lower() == source_type.lower()]
+        if not candidates:
+            candidates = servers
+
+        chosen = None
+        server_priority = {"4": 1, "1": 2, "2": 3}
+        sorted_candidates = sorted(candidates, key=lambda s: server_priority.get(s['server_id'], 99))
+        chosen = sorted_candidates[0] if sorted_candidates else None
+
+        if not chosen:
+            return None
+
+        slug = str(anime_id).replace(self.base_url, "").replace("/watch/", "").strip("/")
+        return self._get_sources(chosen['link_id'], anime_id=slug.split("-")[-1], ep_num=ep_num, slug=slug)
+
     def get_episode_data(self, ep_id, slug=None):
-        """
-        Fetches server sources for the given episode id ('anime_id&eps=ep_num' or numeric).
-        Returns {'sub': sources_dict, 'dub': sources_dict}.
-        """
         ep_id_str = str(ep_id).replace("&amp;", "&")
         if "&eps=" in ep_id_str:
             anime_id, ep_num = ep_id_str.split("&eps=")
@@ -212,14 +412,12 @@ class cantarellatvDownloader:
             data = resp_servers.json()
             srv_html = data.get("result", "") if isinstance(data, dict) else resp_servers.text
 
-            # Parse server types (sub, dub, kord)
             type_blocks = re.findall(
                 r'<div[^>]+class=["\']type["\'][^>]+data-type=["\']([^"\']+)["\'][^>]*>(.*?)</div>\s*(?=<div class=["\']type["\']|</div>|$)',
                 srv_html,
                 re.DOTALL
             )
 
-            # Priority preference for servers: Vidplay (4), Megacloud (1), BYFMS (1), DGHG (2)
             server_priority = {"4": 1, "1": 2, "2": 3}
 
             def find_sources_for_type(target_type):
@@ -232,10 +430,8 @@ class cantarellatvDownloader:
                     )
                     sorted_lis = sorted(lis, key=lambda x: server_priority.get(x[0], 99))
                     for sv_id, link_id, sname in sorted_lis:
-                        print(f"Trying server {sname.strip()} (sv-id {sv_id}) for {target_type}...")
                         sources = self._get_sources(link_id, anime_id, ep_num, slug)
                         if sources and sources.get('sources'):
-                            print(f"Success! Found sources on {sname.strip()}")
                             return sources
                 return None
 
@@ -248,7 +444,6 @@ class cantarellatvDownloader:
         return None
 
     def _get_sources(self, server_data_id, anime_id=None, ep_num=None, slug=None):
-        """Resolves embed and video stream from /ajax/sources?id={link_id}."""
         try:
             enc_id = urllib.parse.quote(server_data_id)
             sources_url = f"{self.ajax_url}/sources?id={enc_id}&asi=0&autoPlay=0"
@@ -268,25 +463,18 @@ class cantarellatvDownloader:
             tracks = res.get("tracks", [])
 
             if embed_url:
-                # If it's a MegaCloud / RapidCloud link, use the Megacloud extractor
-                if any(k in embed_url.lower() for k in ["megacloud", "rapid-cloud", "cloud-stream"]):
+                cloud_keys = ["megacloud", "rapid-cloud", "cloud-stream"]
+                if any(k in embed_url.lower() for k in cloud_keys):
                     try:
                         scraper = Megacloud(embed_url)
                         extracted = scraper.extract()
                         if isinstance(extracted.get('sources'), list) and extracted['sources']:
                             return extracted
                     except Exception as e:
-                        print(f"Megacloud extraction fallback: {e}")
+                        print(f"Megacloud fallback: {e}")
 
-                # Standard HLS / embed source wrapper compatible with download pipeline
                 return {
-                    "sources": [
-                        {
-                            "file": embed_url,
-                            "url": embed_url,
-                            "type": "hls"
-                        }
-                    ],
+                    "sources": [{"file": embed_url, "url": embed_url, "type": "hls"}],
                     "tracks": tracks,
                     "skip_data": res.get("skip_data"),
                     "server": res.get("server"),
@@ -296,7 +484,6 @@ class cantarellatvDownloader:
         return None
 
     def get_episode_info(self, url):
-        """Fetches real anime title, episode number, episode title, and season."""
         slug, anime_id, ep_num = self._parse_url_slug(url)
         if not anime_id:
             return "Anime", "0", "Unknown", "1"
@@ -317,7 +504,7 @@ class cantarellatvDownloader:
                     if jp_match:
                         anime_name = html.unescape(jp_match.group(1).strip())
         except Exception as e:
-            print(f"Could not fetch anime title from page: {e}")
+            print(f"Could not fetch title: {e}")
 
         ep_list_url = f"{self.ajax_url}/episode/list/{anime_id}"
         headers = {**self.ajax_headers, "Referer": f"{self.base_url}/watch/{slug}"}
@@ -356,11 +543,10 @@ class cantarellatvDownloader:
         return slug.replace('-', ' ').title(), str(ep_num), f"Episode {ep_num}", "1"
 
     def list_episodes(self, anime_url):
-        """Lists all episodes for the specified anime URL or search term."""
         slug, anime_id, _ = self._parse_url_slug(anime_url)
         if not anime_id:
-            # Try searching to find slug and anime_id
-            search_url = f"{self.ajax_url}/anime/search?keyword={urllib.parse.quote_plus(anime_url)}"
+            kw = urllib.parse.quote_plus(anime_url)
+            search_url = f"{self.ajax_url}/anime/search?keyword={kw}"
             try:
                 resp = self.session.get(search_url, headers=self.ajax_headers, impersonate="chrome")
                 if resp.status_code == 200:
@@ -371,7 +557,7 @@ class cantarellatvDownloader:
                         slug = items[0].replace("/watch/", "").strip("/")
                         anime_id = slug.split("-")[-1]
             except Exception as e:
-                print(f"Error searching for episodes list: {e}")
+                print(f"Error searching episodes: {e}")
                 return []
 
         if not anime_id:
@@ -392,9 +578,12 @@ class cantarellatvDownloader:
                     ep_html
                 )
                 for ids, num, title in ep_tags:
+                    clean_t = html.unescape(title.strip()) if title else f"Episode {num}"
                     results.append({
-                        'title': html.unescape(title.strip()) if title else f"Episode {num}",
+                        'title': clean_t,
+                        'name': clean_t,
                         'url': f"{self.base_url}/watch/{slug}/ep-{num}",
+                        'link': f"{self.base_url}/watch/{slug}/ep-{num}",
                         'ep_number': str(num),
                         'ep_id': ids.replace("&amp;", "&"),
                     })
@@ -407,20 +596,39 @@ class cantarellatvDownloader:
         if quality == "all":
             success = True
             for q in ["360", "720", "1080"]:
-                if not self._download_with_retry(url, quality=q, name_override=name_override, season_override=season_override, ep_num_override=ep_num_override):
+                ok = self._download_with_retry(
+                    url,
+                    quality=q,
+                    name_override=name_override,
+                    season_override=season_override,
+                    ep_num_override=ep_num_override
+                )
+                if not ok:
                     success = False
             return success
         else:
-            return self._download_with_retry(url, quality=quality, name_override=name_override, season_override=season_override, ep_num_override=ep_num_override)
+            return self._download_with_retry(
+                url,
+                quality=quality,
+                name_override=name_override,
+                season_override=season_override,
+                ep_num_override=ep_num_override
+            )
 
     def _download_with_retry(self, url, quality="auto", name_override=None, season_override=None, ep_num_override=None, max_retries=3):
         for i in range(max_retries):
             try:
-                if self._download_single_episode(url, quality=quality, name_override=name_override, season_override=season_override, ep_num_override=ep_num_override):
+                ok = self._download_single_episode(
+                    url,
+                    quality=quality,
+                    name_override=name_override,
+                    season_override=season_override,
+                    ep_num_override=ep_num_override
+                )
+                if ok:
                     return True
-                print(f"Download attempt {i+1} failed. Retrying...")
             except Exception as e:
-                print(f"Download error on attempt {i+1}: {e}")
+                print(f"Attempt {i+1} failed: {e}")
             time.sleep(5)
         return False
 
@@ -467,7 +675,8 @@ class cantarellatvDownloader:
         )
 
         base_filename = sanitize(base_filename_str)
-        clean_ep_id = sanitize(ep_id.replace('&', '_').replace('=', '_'))
+        safe_id = ep_id.replace('&', '_').replace('=', '_')
+        clean_ep_id = sanitize(safe_id)
         task_dir = self.download_path / f"{clean_ep_id}_{qual_str}"
         task_dir.mkdir(exist_ok=True)
 
@@ -479,7 +688,8 @@ class cantarellatvDownloader:
         source_item = data['sources'][0]
         m3u8_url = source_item.get('file') or source_item.get('url')
 
-        self.progress_queue.put({'status': f"📥 **Downloading: {final_name} [{qual_str}p]**\nPlease wait..."})
+        status_msg = f"📥 **Downloading: {final_name} [{qual_str}p]**\nPlease wait..."
+        self.progress_queue.put({'status': status_msg})
 
         def run_n_m3u8dl(dl_url, save_name, dl_type='sub', quality="auto"):
             ua_header = "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -504,7 +714,8 @@ class cantarellatvDownloader:
             cmd.append("5")
 
             if self.proxy:
-                cmd.extend(["--custom-proxy", self.proxy])
+                cmd.append("--custom-proxy")
+                cmd.append(self.proxy)
 
             if quality == "1080":
                 cmd.extend(["-sv", "res='1080':for=best"])
@@ -513,26 +724,17 @@ class cantarellatvDownloader:
             elif quality == "360":
                 cmd.extend(["-sv", "res='360':for=best"])
             else:
-                cmd.extend(["--auto-select"])
+                cmd.append("--auto-select")
 
             try:
                 bin_preview = ' '.join(cmd[:3])
-                print(
-                    '[' + dl_type.upper() + '] Running: ' + bin_preview,
-                    flush=True
-                )
+                print(f"[{dl_type.upper()}] Running: {bin_preview}", flush=True)
 
                 if not _os.path.isfile(cmd[0]):
-                    print(f"Binary not found at: {cmd[0]}", flush=True)
+                    print(f"Binary not found: {cmd[0]}", flush=True)
                     return False
 
-                process = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    bufsize=0
-                )
-
+                process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=0)
                 last_lines = []
                 buffer = b""
                 while True:
@@ -552,7 +754,6 @@ class cantarellatvDownloader:
                                 last_lines.pop(0)
 
                             if "%" in line:
-                                print(f"[{dl_type.upper()}] {line}", flush=True)
                                 percent_match = re.search(r"(\d+(\.\d+)?)%", line)
                                 parts = re.split(r"\d+(\.\d+)?%", line)
                                 speed_match = None
@@ -570,7 +771,6 @@ class cantarellatvDownloader:
                                 if percent_match:
                                     pct_val = percent_match.group(1)
                                     speed_val = speed_match.group(1) if speed_match else "0 MB/s"
-
                                     progress_data = {
                                         'percent': f"{pct_val}%",
                                         'speed': speed_val,
@@ -580,23 +780,16 @@ class cantarellatvDownloader:
                                         'title': ep_title
                                     }
                                     self.progress_queue.put(progress_data)
-                            else:
-                                print(f"[{dl_type.upper()}] {line}", flush=True)
                         buffer = b""
                     else:
                         buffer += char
 
                 process.wait()
-                exit_code = process.returncode
-                if exit_code != 0:
-                    error_detail = '\n'.join(last_lines) if last_lines else 'No output captured'
-                    print(f"[{dl_type.upper()}] N_m3u8DL-RE exited with code {exit_code}:\n{error_detail}", flush=True)
-                return exit_code == 0
+                return process.returncode == 0
             except Exception as e:
                 print(f"Error running N_m3u8DL-RE: {e}", flush=True)
                 return False
 
-        # Dub settings
         dub_downloaded = [False]
         dub_thread = None
         if all_data.get('sub') and all_data.get('dub'):
@@ -612,13 +805,10 @@ class cantarellatvDownloader:
                             p.rename(audio_temp)
                             dub_downloaded[0] = True
                             break
-                else:
-                    self.progress_queue.put({'status': f"⚠️ **Dub download failed**\nProceeding with Japanese only."})
 
             dub_thread = Thread(target=download_dub)
             dub_thread.start()
 
-        # Start Sub download in main thread
         save_name_sub = f"{base_filename}_sub"
         if run_n_m3u8dl(m3u8_url, save_name_sub, dl_type='sub', quality=quality):
             for ext in ['.mp4', '.mkv', '.ts']:
@@ -637,7 +827,6 @@ class cantarellatvDownloader:
 
         dub_downloaded = dub_downloaded[0]
 
-        # Subtitles download
         sub_files = []
         if data.get('tracks'):
             subs = [t for t in data['tracks'] if t.get('kind') == 'captions']
@@ -653,9 +842,7 @@ class cantarellatvDownloader:
                 except:
                     pass
 
-        # Merge with ffmpeg
         ffmpeg_exe = 'ffmpeg'
-
         if not video_temp.exists():
             for f in task_dir.iterdir():
                 if f.name.startswith(f"{base_filename}_sub."):
@@ -665,19 +852,16 @@ class cantarellatvDownloader:
         if not shutil.which(ffmpeg_exe) or (not sub_files and not dub_downloaded):
             if video_temp.exists():
                 video_temp.replace(final_file)
-
             try:
                 shutil.rmtree(task_dir)
             except:
                 pass
-
             self.progress_queue.put({'finished': True, 'filename': str(final_file), 'title': base_filename})
             return True
 
         self.progress_queue.put({'status': f"🎬 **Merging Tracks for: {ep_title}**\nPlease wait..."})
 
         cmd = [ffmpeg_exe, '-y']
-
         if video_temp.exists():
             cmd.extend(['-i', str(video_temp)])
         else:
