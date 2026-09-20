@@ -13,7 +13,7 @@ from pathlib import Path
 class AniwaveScraper:
     """
     Scraper & Downloader for Aniwave (https://aniwaves.ru)
-    Compatible with Cantarella framework and standard anime download pipelines.
+    Compatible with Cantarella framework and telegram bot plugins.
     """
     BASE_URL = "https://aniwaves.ru"
     AJAX_URL = f"{BASE_URL}/ajax"
@@ -85,7 +85,10 @@ class AniwaveScraper:
                         re.DOTALL | re.IGNORECASE,
                     )
                     for href, inner in items:
-                        name_match = re.search(r'class=["\']name[^"\']*["\'][^>]*data-jp=["\']?([^"\'>]+)?["\']?[^>]*>([^<]+)<', inner)
+                        name_match = re.search(
+                            r'class=["\']name[^"\']*["\'][^>]*data-jp=["\']?([^"\'>]+)?["\']?[^>]*>([^<]+)<',
+                            inner
+                        )
                         title = ""
                         if name_match:
                             title = name_match.group(2).strip() or name_match.group(1).strip()
@@ -203,7 +206,6 @@ class AniwaveScraper:
     def get_episode_servers(self, anime_id, ep_num):
         """
         Get server options (Vidplay, BYFMS, DGHG, etc.) for a specific episode.
-        Endpoint: /ajax/server/list?servers={anime_id}&eps={ep_num}
         """
         slug = str(anime_id).replace(self.BASE_URL, "").replace("/watch/", "").strip("/")
         numeric_id = slug.split("-")[-1]
@@ -219,11 +221,7 @@ class AniwaveScraper:
                 html_content = data.get("result", "") if isinstance(data, dict) else resp.text
 
                 servers = []
-                types = re.findall(
-                    r'<div[^>]+class=["\']type["\'][^>]+data-type=["\']([^"\']+)["\'][^>]*>(.*?)</div>\s*(?=<div class="type"|</div>|$)',
-                    html_content,
-                    re.DOTALL,
-                )
+                types = re.findall(r'<div[^>]+class=["\']type["\'][^>]+data-type=["\']([^"\']+)["\'][^>]*>(.*?)</div>\s*(?=<div class=["\']type["\']|</div>|$)', html_content, re.DOTALL)
                 for stype, block in types:
                     lis = re.findall(r'<li[^>]+data-sv-id=["\']([^"\']+)["\'][^>]+data-link-id=["\']([^"\']+)["\'][^>]*>([^<]+)<', block)
                     for sv_id, link_id, sname in lis:
@@ -241,7 +239,6 @@ class AniwaveScraper:
     def get_episode_sources(self, anime_id, ep_num, server='default', source_type='sub'):
         """
         Fetch stream embed URL and skip metadata for an episode.
-        Endpoint: /ajax/sources?id={encoded_link_id}&asi=0&autoPlay=0
         """
         servers = self.get_episode_servers(anime_id, ep_num)
         if not servers:
@@ -291,30 +288,102 @@ class AniwaveScraper:
             print(f"Aniwave sources error: {e}")
         return None
 
-# Backward-compatible alias
+    def get_schedule(self, date_str=None):
+        """
+        Get schedule of airing anime from Aniwave (/ajax/schedule).
+        Returns list of dicts with all keys expected by Cantarella decorators and handlers.
+        """
+        url = f"{self.AJAX_URL}/schedule"
+        if date_str:
+            url += f"?date={date_str}"
+        try:
+            resp = self.session.get(url, headers=self.AJAX_HEADERS, impersonate="chrome120")
+            if resp.status_code == 200:
+                data = resp.json()
+                raw_html = data.get("result", "") or data.get("html", "")
+
+                pattern = re.compile(
+                    r'<a[^>]+href=[\'\"]([^\'\"]+)[\'\"][^>]*>.*?'
+                    r'<div[^>]+class=[\'\"]time[^\'\"]*[\'\"][^>]*>([^<]+)</div>.*?'
+                    r'<span>([^<]+)</span>.*?'
+                    r'<div[^>]+class=[\'\"][^\'\"]*(?:title|name)[^\'\"]*[\'\"][^>]*>([^<]+)</div>',
+                    re.DOTALL
+                )
+
+                schedule_list = []
+                for href, time_str, ep_str, title in pattern.findall(raw_html):
+                    clean_title = html.unescape(title.strip())
+                    slug = href.replace('/watch/', '').strip('/')
+                    anime_id = slug.split('/')[0].split('-')[-1]
+                    ep_num = re.sub(r'[^\d.]', '', ep_str).strip()
+                    schedule_list.append({
+                        "id": anime_id,
+                        "anime_id": anime_id,
+                        "slug": slug,
+                        "title": clean_title,
+                        "name": clean_title,
+                        "time": time_str.strip(),
+                        "episode": ep_str.strip(),
+                        "ep": ep_str.strip(),
+                        "ep_number": ep_num,
+                        "url": f"{self.BASE_URL}{href}",
+                        "link": f"{self.BASE_URL}{href}",
+                    })
+                return schedule_list
+        except Exception as e:
+            print(f"Aniwave schedule error: {e}")
+        return []
+
+    def fetch_recently_updated(self, page=1, per_page=12):
+        url = f"{self.BASE_URL}/updated?page={page}"
+        try:
+            resp = self.session.get(url, headers=self.HEADERS, impersonate="chrome120")
+            if resp.status_code == 200:
+                results = []
+                cards = re.findall(
+                    r'<a[^>]+href=["\'](/watch/[^"\']+)["\'][^>]*class=["\']name[^"\']*["\'][^>]*>([^<]+)</a>',
+                    resp.text,
+                    re.I,
+                )
+                for href, title in cards[:per_page]:
+                    slug = href.replace("/watch/", "").strip("/")
+                    results.append({
+                        "title": html.unescape(title.strip()),
+                        "id": slug.split("-")[-1],
+                        "slug": slug,
+                        "url": f"{self.BASE_URL}{href}",
+                    })
+                return results
+        except Exception as e:
+            print(f"Aniwave recently updated error: {e}")
+        return []
+
+    def get_home_sections(self):
+        url = f"{self.BASE_URL}/home"
+        try:
+            resp = self.session.get(url, headers=self.HEADERS, impersonate="chrome120")
+            if resp.status_code == 200:
+                spotlights = re.findall(
+                    r'<div[^>]+class=["\']swiper-slide item["\'][^>]*>.*?<h2[^>]+class=["\']title d-title["\'][^>]*data-jp=["\']([^"\']*)["\']>([^<]+)</h2>.*?<div[^>]+class=["\']synopsis["\']>([^<]+)</div>.*?href=["\'](/watch/[^"\']+)["\']',
+                    resp.text,
+                    re.DOTALL,
+                )
+                items = []
+                for jp_title, en_title, syn, watch_url in spotlights:
+                    slug = watch_url.replace("/watch/", "").strip("/")
+                    items.append({
+                        "title": html.unescape(en_title.strip()),
+                        "title_jp": html.unescape(jp_title.strip()),
+                        "synopsis": html.unescape(syn.strip()),
+                        "url": f"{self.BASE_URL}{watch_url}",
+                        "id": slug.split("-")[-1],
+                        "slug": slug,
+                    })
+                return {"spotlight": items}
+        except Exception as e:
+            print(f"Aniwave home sections error: {e}")
+        return {}
+
+
+# Backward-compatible alias for Cantarella
 AnimetsuScraper = AniwaveScraper
-
-if __name__ == '__main__':
-    scraper = AniwaveScraper()
-    print("1. Testing Search:")
-    res = scraper.search_anime('solo leveling')
-    for item in res[:3]:
-        print(f" - {item['title']} (ID: {item['id']}, Slug: {item['slug']})")
-
-    if res:
-        first = res[0]
-        print(f"\n2. Testing Episodes for {first['title']}:")
-        eps = scraper.list_episodes(first['slug'])
-        print(f" - Found {len(eps)} episodes")
-
-        if eps:
-            print(f"\n3. Testing Servers for Episode 1:")
-            servers = scraper.get_episode_servers(first['slug'], '1')
-            for s in servers[:4]:
-                print(f" - {s['name']} ({s['type'].upper()})")
-
-            print(f"\n4. Testing Source Embed URL:")
-            source = scraper.get_episode_sources(first['slug'], '1')
-            if source:
-                print(f" - Server: {source['server']}")
-                print(f" - Embed URL: {source['embed_url']}")
